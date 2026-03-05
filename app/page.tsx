@@ -20,6 +20,14 @@ type LogEntry = {
 
 type TokenizationUnit = ConditionSpec["tokenization"]["unit"];
 type ReaderMode = ConditionSpec["mode"];
+type SettingsJson = ConditionSpec & {
+  ui?: {
+    viewportStep?: ViewportStep;
+    advanceStep?: number;
+    viewportWidthPercent?: number;
+    viewportHeightPercent?: number;
+  };
+};
 const RSVP_STEPS = [
   "letter-1",
   "letter-2",
@@ -27,16 +35,23 @@ const RSVP_STEPS = [
   "word-1",
   "word-2",
   "word-3",
-  "sentence",
-  "page",
+  "sentence-1",
+  "sentence-2",
+  "sentence-3",
+  "paragraph-1",
+  "paragraph-2",
+  "paragraph-3",
 ] as const;
 const CONTINUOUS_STEPS = [...RSVP_STEPS] as const;
 type ViewportStep = (typeof CONTINUOUS_STEPS)[number];
 const MIN_SETTINGS_WIDTH = 280;
 const MIN_VIEWPORT_WIDTH = 320;
+const VIEWPORT_SIZE_MIN_PERCENT = 1;
+const VIEWPORT_SIZE_MAX_PERCENT = 100;
 const SPEED_MIN_CPS = 1;
 const SPEED_MAX_CPS = 80;
 const DEFAULT_TEXT_PATH = "/default-text.txt";
+const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
 const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
   "letter-1": "1 letter",
   "letter-2": "2 letters",
@@ -44,8 +59,12 @@ const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
   "word-1": "1 word",
   "word-2": "2 words",
   "word-3": "3 words",
-  sentence: "sentence",
-  page: "page",
+  "sentence-1": "1 sentence",
+  "sentence-2": "2 sentences",
+  "sentence-3": "3 sentences",
+  "paragraph-1": "1 paragraph",
+  "paragraph-2": "2 paragraphs",
+  "paragraph-3": "3 paragraphs",
 };
 
 function getViewportStepsForMode(mode: ReaderMode) {
@@ -57,18 +76,8 @@ function getStepIndex(step: ViewportStep, mode: ReaderMode): number {
 }
 
 function getViewportTokenCount(step: ViewportStep): number {
-  if (
-    step === "letter-1" ||
-    step === "word-1" ||
-    step === "sentence" ||
-    step === "page"
-  ) {
-    return 1;
-  }
-  if (step === "letter-2" || step === "word-2") {
-    return 2;
-  }
-  return 3;
+  const match = step.match(/-(\d)$/);
+  return match ? Number(match[1]) : 1;
 }
 
 function getViewportStepFromTokenization(
@@ -77,7 +86,14 @@ function getViewportStepFromTokenization(
 ): ViewportStep {
   const size = Math.max(1, Math.floor(chunkSize || 1));
   if (unit === "sentence") {
-    return "sentence";
+    if (size === 1) return "sentence-1";
+    if (size === 2) return "sentence-2";
+    return "sentence-3";
+  }
+  if (unit === "paragraph") {
+    if (size === 1) return "paragraph-1";
+    if (size === 2) return "paragraph-2";
+    return "paragraph-3";
   }
   if (unit === "char") {
     if (size === 1) return "letter-1";
@@ -99,8 +115,12 @@ function getTokenizationFromViewportStep(step: ViewportStep): {
   if (step === "word-1") return { unit: "word", chunkSize: 1 };
   if (step === "word-2") return { unit: "word", chunkSize: 2 };
   if (step === "word-3") return { unit: "word", chunkSize: 3 };
-  if (step === "sentence") return { unit: "sentence", chunkSize: 1 };
-  return { unit: "word", chunkSize: 20 };
+  if (step === "sentence-1") return { unit: "sentence", chunkSize: 1 };
+  if (step === "sentence-2") return { unit: "sentence", chunkSize: 2 };
+  if (step === "sentence-3") return { unit: "sentence", chunkSize: 3 };
+  if (step === "paragraph-1") return { unit: "paragraph", chunkSize: 1 };
+  if (step === "paragraph-2") return { unit: "paragraph", chunkSize: 2 };
+  return { unit: "paragraph", chunkSize: 3 };
 }
 
 function sanitizeSettingsName(value: string): string {
@@ -133,7 +153,13 @@ function getRsvpDisplayToken(
   for (let i = 0; i < size; i += 1) {
     windowTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
   }
-  return windowTokens.join(unit === "char" ? "" : " ");
+  if (unit === "char") {
+    return windowTokens.join("");
+  }
+  if (unit === "paragraph") {
+    return windowTokens.join("\n\n");
+  }
+  return windowTokens.join(" ");
 }
 
 function splitAroundCenterCharacter(value: string): {
@@ -202,9 +228,14 @@ function tokenizeText(
     unit === "char"
       ? Array.from(text)
       : unit === "sentence"
-        ? (text.match(/[^.!?]+[.!?]?/g) ?? [])
+        ? (text.match(SENTENCE_REGEX) ?? [])
             .map((token) => token.trim())
             .filter(Boolean)
+        : unit === "paragraph"
+          ? text
+              .split(/\n\s*\n+/)
+              .map((token) => token.trim())
+              .filter(Boolean)
         : text.trim().split(/\s+/).filter(Boolean);
 
   if (!baseTokens.length) {
@@ -229,7 +260,7 @@ function formatTokenAsSentenceLines(value: string): string {
   if (!value.trim()) {
     return "";
   }
-  return (value.match(/[^.!?]+[.!?]?/g) ?? [value])
+  return (value.match(SENTENCE_REGEX) ?? [value])
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .join("\n");
@@ -244,23 +275,38 @@ function RsvpRenderer({
   token: string;
   viewportStep: ViewportStep;
 }) {
-  const isSentenceOrPage =
-    viewportStep === "sentence" || viewportStep === "page";
-  const multilineToken = isSentenceOrPage
+  const alignment = spec.typography.alignment;
+  const textAlign = alignment === "justify" ? "justify" : alignment;
+  const isSentenceOrParagraph =
+    viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
+  const horizontalJustify = isSentenceOrParagraph
+    ? alignment === "center"
+      ? "center"
+      : alignment === "right"
+        ? "flex-end"
+        : "flex-start"
+    : "center";
+  const multilineToken = viewportStep.startsWith("sentence")
     ? formatTokenAsSentenceLines(token)
     : token;
   const { left, center, right } = splitAroundCenterCharacter(token);
   return (
-    <div className="flex h-full w-full items-center justify-center">
+    <div
+      className="flex h-full w-full items-center"
+      style={{ justifyContent: horizontalJustify }}
+    >
       <div
-        className={`w-full select-none ${isSentenceOrPage ? "" : "grid grid-cols-[1fr_auto_1fr] items-center"}`}
+        className={`w-full select-none ${isSentenceOrParagraph ? "" : "grid grid-cols-[1fr_auto_1fr] items-center"}`}
         style={{
-          maxWidth: spec.typography.lineWidthPx,
+          maxWidth: spec.typography.useViewportWidth
+            ? "100%"
+            : spec.typography.lineWidthPx,
           fontFamily: spec.typography.fontFamily,
           fontSize: spec.typography.fontSizePx,
           lineHeight: spec.typography.lineHeight,
           letterSpacing: spec.typography.letterSpacingPx,
           wordSpacing: spec.typography.wordSpacingPx,
+          textAlign: isSentenceOrParagraph ? textAlign : undefined,
           fontVariationSettings: spec.typography.variableAxes
             ? Object.entries(spec.typography.variableAxes)
                 .map(([axis, value]) => `"${axis}" ${value}`)
@@ -269,8 +315,8 @@ function RsvpRenderer({
         }}
       >
         {token ? (
-          isSentenceOrPage ? (
-            <div className="whitespace-pre-wrap text-left">
+          isSentenceOrParagraph ? (
+            <div className="whitespace-pre-wrap">
               {multilineToken}
             </div>
           ) : (
@@ -279,7 +325,7 @@ function RsvpRenderer({
                 {left}
               </span>
               <span className="whitespace-pre">{center}</span>
-              <span className="whitespace-pre">{right}</span>
+              <span className="whitespace-pre text-left">{right}</span>
             </>
           )
         ) : (
@@ -299,17 +345,35 @@ function ContinuousRsvpRenderer({
 }) {
   const [offsetPx, setOffsetPx] = useState(0);
   const direction = spec.motion.direction;
+  const textAlign =
+    spec.typography.alignment === "justify"
+      ? "justify"
+      : spec.typography.alignment;
   const pxPerSecond = speedToPxPerSecond(spec);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
   const cycleLengthRef = useRef(2000);
+  const loopGapPx = Math.max(
+    12,
+    direction === "vertical"
+      ? spec.typography.fontSizePx * spec.typography.lineHeight * 2
+      : spec.typography.fontSizePx * 0.9,
+  );
   const text = useMemo(
     () =>
       direction === "vertical"
         ? tokens.join("\n")
-        : tokens.join(spec.tokenization.unit === "char" ? "" : " "),
+        : tokens.join(
+            spec.tokenization.unit === "char"
+              ? ""
+              : spec.tokenization.unit === "paragraph"
+                ? "\n\n"
+                : " ",
+          ),
     [direction, spec.tokenization.unit, tokens],
   );
+  const displayText = text || "Enter text to begin";
 
   useEffect(() => {
     if (!spec.motion.autoplay || spec.mode !== "continuous") {
@@ -321,9 +385,8 @@ function ContinuousRsvpRenderer({
       const dt = lastTs == null ? 0 : (ts - lastTs) / 1000;
       lastTsRef.current = ts;
       setOffsetPx((prev) => {
-        const next = prev + pxPerSecond * dt;
         const cycle = Math.max(1, cycleLengthRef.current);
-        return next > cycle ? 0 : next;
+        return (prev + pxPerSecond * dt) % cycle;
       });
       rafRef.current = window.requestAnimationFrame(tick);
     };
@@ -338,6 +401,45 @@ function ContinuousRsvpRenderer({
     };
   }, [pxPerSecond, spec.mode, spec.motion.autoplay]);
 
+  useEffect(() => {
+    const node = measureRef.current;
+    if (!node) {
+      return;
+    }
+
+    const updateCycleLength = () => {
+      const nextCycle =
+        direction === "horizontal"
+          ? node.scrollWidth + loopGapPx
+          : node.scrollHeight + loopGapPx;
+      cycleLengthRef.current = Math.max(1, nextCycle);
+      setOffsetPx((prev) => prev % cycleLengthRef.current);
+    };
+
+    updateCycleLength();
+    const resizeObserver = new ResizeObserver(updateCycleLength);
+    resizeObserver.observe(node);
+    if (node.parentElement) {
+      resizeObserver.observe(node.parentElement);
+    }
+    window.addEventListener("resize", updateCycleLength);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateCycleLength);
+    };
+  }, [
+    direction,
+    displayText,
+    loopGapPx,
+    spec.motion.wrapVerticalText,
+    spec.typography.alignment,
+    spec.typography.fontFamily,
+    spec.typography.fontSizePx,
+    spec.typography.letterSpacingPx,
+    spec.typography.lineHeight,
+    spec.typography.wordSpacingPx,
+  ]);
+
   return (
     <div className="relative h-full w-full overflow-hidden">
       <div
@@ -349,40 +451,93 @@ function ContinuousRsvpRenderer({
               : "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(34,197,94,0.25) 50%, rgba(255,255,255,0) 100%)",
         }}
       />
-      <div className="flex h-full w-full items-center justify-center px-8">
-        <div
-          className={
-            direction === "vertical"
-              ? "whitespace-pre text-center"
-              : "whitespace-nowrap"
-          }
-          style={{
-            transform:
-              direction === "horizontal"
-                ? `translateX(${-offsetPx}px)`
-                : `translateY(${-offsetPx}px)`,
-            fontFamily: spec.typography.fontFamily,
-            fontSize: spec.typography.fontSizePx,
-            lineHeight: spec.typography.lineHeight,
-            letterSpacing: spec.typography.letterSpacingPx,
-            wordSpacing: spec.typography.wordSpacingPx,
-          }}
-          ref={(node) => {
-            if (!node) {
-              return;
-            }
-            const container = node.parentElement;
-            const viewportWidth = container?.clientWidth ?? node.clientWidth;
-            const viewportHeight = container?.clientHeight ?? node.clientHeight;
-            cycleLengthRef.current =
-              direction === "horizontal"
-                ? node.scrollWidth + viewportWidth
-                : node.scrollHeight + viewportHeight;
-          }}
-        >
-          {text || "Enter text to begin"}
+      {direction === "horizontal" ? (
+        <div className="absolute inset-y-0 left-0 flex items-center overflow-hidden">
+          <div
+            className="flex items-center px-8"
+            style={{
+              gap: loopGapPx,
+              transform: `translateX(${-offsetPx}px)`,
+            }}
+          >
+            <div
+              ref={measureRef}
+              className="whitespace-nowrap"
+              style={{
+                fontFamily: spec.typography.fontFamily,
+                fontSize: spec.typography.fontSizePx,
+                lineHeight: spec.typography.lineHeight,
+                letterSpacing: spec.typography.letterSpacingPx,
+                wordSpacing: spec.typography.wordSpacingPx,
+                textAlign,
+              }}
+            >
+              {displayText}
+            </div>
+            <div
+              aria-hidden="true"
+              className="whitespace-nowrap"
+              style={{
+                fontFamily: spec.typography.fontFamily,
+                fontSize: spec.typography.fontSizePx,
+                lineHeight: spec.typography.lineHeight,
+                letterSpacing: spec.typography.letterSpacingPx,
+                wordSpacing: spec.typography.wordSpacingPx,
+                textAlign,
+              }}
+            >
+              {displayText}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="absolute inset-x-0 top-0 overflow-hidden px-8">
+          <div
+            className="flex flex-col"
+            style={{
+              gap: loopGapPx,
+              transform: `translateY(${-offsetPx}px)`,
+            }}
+          >
+            <div
+              ref={measureRef}
+              className={
+                spec.motion.wrapVerticalText
+                  ? "whitespace-pre-wrap break-words text-left"
+                  : "whitespace-pre text-center"
+              }
+              style={{
+                fontFamily: spec.typography.fontFamily,
+                fontSize: spec.typography.fontSizePx,
+                lineHeight: spec.typography.lineHeight,
+                letterSpacing: spec.typography.letterSpacingPx,
+                wordSpacing: spec.typography.wordSpacingPx,
+                textAlign,
+              }}
+            >
+              {displayText}
+            </div>
+            <div
+              aria-hidden="true"
+              className={
+                spec.motion.wrapVerticalText
+                  ? "whitespace-pre-wrap break-words text-left"
+                  : "whitespace-pre text-center"
+              }
+              style={{
+                fontFamily: spec.typography.fontFamily,
+                fontSize: spec.typography.fontSizePx,
+                lineHeight: spec.typography.lineHeight,
+                letterSpacing: spec.typography.letterSpacingPx,
+                wordSpacing: spec.typography.wordSpacingPx,
+                textAlign,
+              }}
+            >
+              {displayText}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -411,6 +566,7 @@ function Viewport({
       className={`h-full w-full overflow-hidden border border-zinc-300 select-none ${
         manualAdvanceEnabled ? "cursor-pointer" : ""
       }`}
+      style={{ padding: spec.typography.viewportPaddingPx }}
       onClick={manualAdvanceEnabled ? onManualAdvance : undefined}
       onMouseMove={onViewportMouseMove}
       onMouseLeave={onViewportMouseLeave}
@@ -446,7 +602,10 @@ export default function Home() {
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
   const [isSettingsVisible, setIsSettingsVisible] = useState(true);
   const [settingsWidth, setSettingsWidth] = useState(420);
+  const [viewportWidthPercent, setViewportWidthPercent] = useState(100);
+  const [viewportHeightPercent, setViewportHeightPercent] = useState(100);
   const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const [isResizingViewport, setIsResizingViewport] = useState(false);
   const [settingsName, setSettingsName] = useState("condition-spec");
   const [settingsModalError, setSettingsModalError] = useState("");
   const [text, setText] = useState("");
@@ -454,6 +613,15 @@ export default function Home() {
   const rsvpIndexRef = useRef(0);
   const baseSpeedBeforeMouseRef = useRef<number | null>(null);
   const splitViewRef = useRef<HTMLDivElement | null>(null);
+  const viewportAreaRef = useRef<HTMLDivElement | null>(null);
+  const viewportResizeStartRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    widthPercent: number;
+    heightPercent: number;
+    horizontalSign: 1 | -1;
+    verticalSign: 1 | -1;
+  } | null>(null);
   const settingsFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const appendLog = useCallback((entry: LogEntry) => {
@@ -475,7 +643,7 @@ export default function Home() {
           setText(loadedText);
         }
       } catch {
-        // Ignore missing default text file and keep current content.
+        // if default text file isnt there just keep whats already loaded
       }
     };
 
@@ -485,10 +653,9 @@ export default function Home() {
     };
   }, []);
 
-  const rsvpChunkSize =
-    spec.mode === "rsvp" && viewportStep === "page"
-      ? Math.max(1, spec.tokenization.chunkSize)
-      : 1;
+  // rsvp size comes from viewport step
+  // keep base tokens ungrouped so counts dont multiply
+  const rsvpChunkSize = 1;
   const rsvpTokens = useMemo(
     () => tokenizeText(text, spec.tokenization.unit, rsvpChunkSize),
     [rsvpChunkSize, spec.tokenization.unit, text],
@@ -517,6 +684,24 @@ export default function Home() {
     safeRsvpIndex,
     viewportTokenCount,
     spec.tokenization.unit,
+  );
+  const settingsPayload = useMemo<SettingsJson>(
+    () => ({
+      ...spec,
+      ui: {
+        viewportStep,
+        advanceStep,
+        viewportWidthPercent,
+        viewportHeightPercent,
+      },
+    }),
+    [
+      advanceStep,
+      spec,
+      viewportHeightPercent,
+      viewportStep,
+      viewportWidthPercent,
+    ],
   );
   const canManualAdvance =
     spec.mode === "rsvp" && !spec.motion.autoplay && rsvpTokens.length > 0;
@@ -756,7 +941,7 @@ export default function Home() {
   const handleDownloadSettings = useCallback(() => {
     const safeName = sanitizeSettingsName(settingsName) || "condition-spec";
     const fileName = `${safeName}.json`;
-    const blob = new Blob([JSON.stringify(spec, null, 2)], {
+    const blob = new Blob([JSON.stringify(settingsPayload, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
@@ -767,11 +952,51 @@ export default function Home() {
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
-  }, [settingsName, spec]);
+  }, [settingsName, settingsPayload]);
+
+  const handleCopySettings = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard not available in this browser.");
+      }
+      await navigator.clipboard.writeText(JSON.stringify(settingsPayload, null, 2));
+      setSettingsModalError("");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to copy settings JSON.";
+      setSettingsModalError(message);
+    }
+  }, [settingsPayload]);
+
+  const handleResetDefaults = useCallback(() => {
+    const defaultSpec: ConditionSpec = {
+      ...conditionSpec,
+      motion: {
+        ...conditionSpec.motion,
+        speed: { ...conditionSpec.motion.speed, unit: "cps" },
+      },
+      typography: {
+        ...conditionSpec.typography,
+      },
+    };
+    setSpec(defaultSpec);
+    setViewportStep(
+      getViewportStepFromTokenization(
+        conditionSpec.tokenization.unit,
+        conditionSpec.tokenization.chunkSize,
+      ),
+    );
+    setAdvanceStep(1);
+    setViewportWidthPercent(VIEWPORT_SIZE_MAX_PERCENT);
+    setViewportHeightPercent(VIEWPORT_SIZE_MAX_PERCENT);
+    baseSpeedBeforeMouseRef.current = null;
+    setSettingsModalError("");
+  }, []);
 
   const handleUploadSettingsFile = useCallback(async (file: File) => {
     const raw = await file.text();
     const parsed = JSON.parse(raw) as Partial<ConditionSpec> & {
+      ui?: SettingsJson["ui"];
       motion?: Partial<ConditionSpec["motion"]> & {
         speed?: { unit?: string; value?: number };
         rateControl?: Partial<ConditionSpec["motion"]["rateControl"]>;
@@ -802,10 +1027,30 @@ export default function Home() {
       typography: {
         ...conditionSpec.typography,
         ...parsed.typography,
+        viewportPaddingPx: Number.isFinite(
+          Number(parsed.typography?.viewportPaddingPx),
+        )
+          ? Math.max(0, Number(parsed.typography?.viewportPaddingPx))
+          : conditionSpec.typography.viewportPaddingPx,
+        useViewportWidth:
+          typeof parsed.typography?.useViewportWidth === "boolean"
+            ? parsed.typography.useViewportWidth
+            : conditionSpec.typography.useViewportWidth,
+        alignment:
+          parsed.typography?.alignment === "left" ||
+          parsed.typography?.alignment === "center" ||
+          parsed.typography?.alignment === "right" ||
+          parsed.typography?.alignment === "justify"
+            ? parsed.typography.alignment
+            : conditionSpec.typography.alignment,
       },
       motion: {
         ...conditionSpec.motion,
         ...parsed.motion,
+        wrapVerticalText:
+          typeof parsed.motion?.wrapVerticalText === "boolean"
+            ? parsed.motion.wrapVerticalText
+            : conditionSpec.motion.wrapVerticalText,
         speed: {
           ...conditionSpec.motion.speed,
           ...parsed.motion?.speed,
@@ -867,10 +1112,36 @@ export default function Home() {
         },
       },
     });
-    setViewportStep(
-      getViewportStepFromTokenization(
-        next.tokenization.unit,
-        next.tokenization.chunkSize,
+    const fallbackViewportStep = getViewportStepFromTokenization(
+      next.tokenization.unit,
+      next.tokenization.chunkSize,
+    );
+    const uploadedViewportStep = parsed.ui?.viewportStep;
+    const modeSteps = getViewportStepsForMode(next.mode);
+    const resolvedViewportStep =
+      uploadedViewportStep && modeSteps.includes(uploadedViewportStep)
+        ? uploadedViewportStep
+        : fallbackViewportStep;
+    setViewportStep(resolvedViewportStep);
+    setAdvanceStep(
+      clamp(
+        Number(parsed.ui?.advanceStep) || 1,
+        1,
+        getViewportTokenCount(resolvedViewportStep),
+      ),
+    );
+    setViewportWidthPercent(
+      clamp(
+        Number(parsed.ui?.viewportWidthPercent) || VIEWPORT_SIZE_MAX_PERCENT,
+        VIEWPORT_SIZE_MIN_PERCENT,
+        VIEWPORT_SIZE_MAX_PERCENT,
+      ),
+    );
+    setViewportHeightPercent(
+      clamp(
+        Number(parsed.ui?.viewportHeightPercent) || VIEWPORT_SIZE_MAX_PERCENT,
+        VIEWPORT_SIZE_MIN_PERCENT,
+        VIEWPORT_SIZE_MAX_PERCENT,
       ),
     );
     setSettingsModalError("");
@@ -951,6 +1222,56 @@ export default function Home() {
     return () => window.removeEventListener("resize", handleResize);
   }, [isSettingsVisible]);
 
+  useEffect(() => {
+    if (!isResizingViewport) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const start = viewportResizeStartRef.current;
+      const area = viewportAreaRef.current;
+      if (!start || !area) {
+        return;
+      }
+      const rect = area.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+
+      const deltaXPercent =
+        ((event.clientX - start.pointerX) / rect.width) * 100;
+      const deltaYPercent =
+        ((event.clientY - start.pointerY) / rect.height) * 100;
+
+      setViewportWidthPercent(
+        clamp(
+          start.widthPercent + deltaXPercent * start.horizontalSign,
+          VIEWPORT_SIZE_MIN_PERCENT,
+          VIEWPORT_SIZE_MAX_PERCENT,
+        ),
+      );
+      setViewportHeightPercent(
+        clamp(
+          start.heightPercent + deltaYPercent * start.verticalSign,
+          VIEWPORT_SIZE_MIN_PERCENT,
+          VIEWPORT_SIZE_MAX_PERCENT,
+        ),
+      );
+    };
+
+    const handlePointerUp = () => {
+      viewportResizeStartRef.current = null;
+      setIsResizingViewport(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingViewport]);
+
   return (
     <main className="bg-white text-black">
       <div className="mx-auto w-full max-w-[1600px] px-4 py-4">
@@ -969,17 +1290,74 @@ export default function Home() {
           className="flex h-[calc(100vh-5rem)] min-h-[680px] rounded border border-zinc-200"
         >
           <section className="min-w-0 flex-1 overflow-auto p-4">
-            <div className="flex h-full items-center justify-center">
-              <Viewport
-                spec={spec}
-                viewportStep={viewportStep}
-                rsvpToken={currentRsvpToken}
-                continuousTokens={continuousTokens}
-                manualAdvanceEnabled={canManualAdvance}
-                onManualAdvance={() => advanceRsvp("manual")}
-                onViewportMouseMove={handleViewportMouseMove}
-                onViewportMouseLeave={handleViewportMouseLeave}
-              />
+            <div
+              ref={viewportAreaRef}
+              className="relative flex h-full items-center justify-center"
+            >
+              <div
+                className="relative"
+                style={{
+                  width: `${viewportWidthPercent}%`,
+                  height: `${viewportHeightPercent}%`,
+                }}
+              >
+                <Viewport
+                  spec={spec}
+                  viewportStep={viewportStep}
+                  rsvpToken={currentRsvpToken}
+                  continuousTokens={continuousTokens}
+                  manualAdvanceEnabled={canManualAdvance}
+                  onManualAdvance={() => advanceRsvp("manual")}
+                  onViewportMouseMove={handleViewportMouseMove}
+                  onViewportMouseLeave={handleViewportMouseLeave}
+                />
+                {[
+                  {
+                    key: "top-left",
+                    className: "-left-2 -top-2 cursor-nwse-resize",
+                    horizontalSign: -1 as const,
+                    verticalSign: -1 as const,
+                  },
+                  {
+                    key: "top-right",
+                    className: "-right-2 -top-2 cursor-nesw-resize",
+                    horizontalSign: 1 as const,
+                    verticalSign: -1 as const,
+                  },
+                  {
+                    key: "bottom-left",
+                    className: "-bottom-2 -left-2 cursor-nesw-resize",
+                    horizontalSign: -1 as const,
+                    verticalSign: 1 as const,
+                  },
+                  {
+                    key: "bottom-right",
+                    className: "-bottom-2 -right-2 cursor-nwse-resize",
+                    horizontalSign: 1 as const,
+                    verticalSign: 1 as const,
+                  },
+                ].map((handle) => (
+                  <button
+                    key={handle.key}
+                    type="button"
+                    aria-label={`Resize viewport from ${handle.key}`}
+                    className={`absolute h-6 w-6 border-0 bg-transparent p-0 outline-none ${handle.className}`}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      viewportResizeStartRef.current = {
+                        pointerX: event.clientX,
+                        pointerY: event.clientY,
+                        widthPercent: viewportWidthPercent,
+                        heightPercent: viewportHeightPercent,
+                        horizontalSign: handle.horizontalSign,
+                        verticalSign: handle.verticalSign,
+                      };
+                      setIsResizingViewport(true);
+                    }}
+                  />
+                ))}
+              </div>
             </div>
           </section>
 
@@ -1073,6 +1451,87 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <label className="flex flex-col gap-1 text-sm">
+                    Advance Step: {effectiveAdvanceStep}
+                    <input
+                      type="range"
+                      min={1}
+                      max={maxAdvanceStep}
+                      step={1}
+                      list="advance-step-ticks"
+                      disabled={spec.mode !== "rsvp"}
+                      value={effectiveAdvanceStep}
+                      onChange={(e) =>
+                        setAdvanceStep(
+                          Math.max(
+                            1,
+                            Math.min(
+                              maxAdvanceStep,
+                              Number(e.target.value) || 1,
+                            ),
+                          ),
+                        )
+                      }
+                    />
+                    <datalist id="advance-step-ticks">
+                      {Array.from(
+                        { length: maxAdvanceStep },
+                        (_, i) => i + 1,
+                      ).map((value) => (
+                        <option key={value} value={value} />
+                      ))}
+                    </datalist>
+                    <span className="text-xs text-zinc-500">
+                      Allowed range: 1-{maxAdvanceStep}
+                    </span>
+                  </label>
+
+                  <label className="flex flex-col gap-1 text-sm">
+                    Viewport Width: {Math.round(viewportWidthPercent)}%
+                    <input
+                      type="range"
+                      min={VIEWPORT_SIZE_MIN_PERCENT}
+                      max={VIEWPORT_SIZE_MAX_PERCENT}
+                      step={1}
+                      value={viewportWidthPercent}
+                      onChange={(e) =>
+                        setViewportWidthPercent(
+                          clamp(
+                            Number(e.target.value) || VIEWPORT_SIZE_MAX_PERCENT,
+                            VIEWPORT_SIZE_MIN_PERCENT,
+                            VIEWPORT_SIZE_MAX_PERCENT,
+                          ),
+                        )
+                      }
+                    />
+                    <span className="text-xs text-zinc-500">
+                      Adjusts inner viewport width.
+                    </span>
+                  </label>
+
+                  <label className="flex flex-col gap-1 text-sm">
+                    Viewport Height: {Math.round(viewportHeightPercent)}%
+                    <input
+                      type="range"
+                      min={VIEWPORT_SIZE_MIN_PERCENT}
+                      max={VIEWPORT_SIZE_MAX_PERCENT}
+                      step={1}
+                      value={viewportHeightPercent}
+                      onChange={(e) =>
+                        setViewportHeightPercent(
+                          clamp(
+                            Number(e.target.value) || VIEWPORT_SIZE_MAX_PERCENT,
+                            VIEWPORT_SIZE_MIN_PERCENT,
+                            VIEWPORT_SIZE_MAX_PERCENT,
+                          ),
+                        )
+                      }
+                    />
+                    <span className="text-xs text-zinc-500">
+                      Adjusts inner viewport height.
+                    </span>
+                  </label>
+
                   <section className="space-y-3 rounded border border-zinc-200 p-3 text-sm">
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-600">
                       Mouse Y Rate Control
@@ -1119,41 +1578,6 @@ export default function Home() {
                       </label>
                     </div>
                   </section>
-
-                  <label className="flex flex-col gap-1 text-sm">
-                    Advance Step: {effectiveAdvanceStep}
-                    <input
-                      type="range"
-                      min={1}
-                      max={maxAdvanceStep}
-                      step={1}
-                      list="advance-step-ticks"
-                      disabled={spec.mode !== "rsvp"}
-                      value={effectiveAdvanceStep}
-                      onChange={(e) =>
-                        setAdvanceStep(
-                          Math.max(
-                            1,
-                            Math.min(
-                              maxAdvanceStep,
-                              Number(e.target.value) || 1,
-                            ),
-                          ),
-                        )
-                      }
-                    />
-                    <datalist id="advance-step-ticks">
-                      {Array.from(
-                        { length: maxAdvanceStep },
-                        (_, i) => i + 1,
-                      ).map((value) => (
-                        <option key={value} value={value} />
-                      ))}
-                    </datalist>
-                    <span className="text-xs text-zinc-500">
-                      Allowed range: 1-{maxAdvanceStep}
-                    </span>
-                  </label>
 
                   <div className="grid gap-4">
                     {spec.mode === "rsvp" ? (
@@ -1342,6 +1766,23 @@ export default function Home() {
                               <option value="vertical">vertical</option>
                             </select>
                           </label>
+                          <label className="flex items-center gap-2 pt-6">
+                            <input
+                              type="checkbox"
+                              checked={spec.motion.wrapVerticalText}
+                              disabled={spec.motion.direction !== "vertical"}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  motion: {
+                                    ...prev.motion,
+                                    wrapVerticalText: e.target.checked,
+                                  },
+                                }))
+                              }
+                            />
+                            Wrap vertical text
+                          </label>
                         </div>
                       </section>
                     ) : null}
@@ -1397,6 +1838,44 @@ export default function Home() {
                             }
                           />
                         </label>
+                        <label className="flex flex-col gap-1">
+                          Alignment
+                          <select
+                            className="rounded border border-zinc-300 px-2 py-1"
+                            value={spec.typography.alignment}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  alignment: e.target
+                                    .value as ConditionSpec["typography"]["alignment"],
+                                },
+                              }))
+                            }
+                          >
+                            <option value="left">left</option>
+                            <option value="center">center</option>
+                            <option value="right">right</option>
+                            <option value="justify">justify</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center gap-2 pt-6">
+                          <input
+                            type="checkbox"
+                            checked={spec.typography.useViewportWidth}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  useViewportWidth: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          Use full viewport width
+                        </label>
                       </div>
                       <label className="flex flex-col gap-1">
                         Line Width: {spec.typography.lineWidthPx}px
@@ -1406,6 +1885,7 @@ export default function Home() {
                           min={200}
                           max={1400}
                           step={10}
+                          disabled={spec.typography.useViewportWidth}
                           value={spec.typography.lineWidthPx}
                           onChange={(e) =>
                             setSpec((prev) => ({
@@ -1420,6 +1900,37 @@ export default function Home() {
                             }))
                           }
                         />
+                        <span className="text-xs text-zinc-500">
+                          {spec.typography.useViewportWidth
+                            ? "Disable full viewport width to edit line width."
+                            : "Caps text measure inside the viewport."}
+                        </span>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        Viewport Padding: {spec.typography.viewportPaddingPx}px
+                        <input
+                          className="w-full"
+                          type="range"
+                          min={0}
+                          max={120}
+                          step={1}
+                          value={spec.typography.viewportPaddingPx}
+                          onChange={(e) =>
+                            setSpec((prev) => ({
+                              ...prev,
+                              typography: {
+                                ...prev.typography,
+                                viewportPaddingPx: Math.max(
+                                  0,
+                                  Number(e.target.value) || 0,
+                                ),
+                              },
+                            }))
+                          }
+                        />
+                        <span className="text-xs text-zinc-500">
+                          Space between the text area and the viewport edge.
+                        </span>
                       </label>
                     </section>
                   </div>
@@ -1452,7 +1963,7 @@ export default function Home() {
                 Close
               </button>
             </div>
-            <div className="mb-3 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+            <div className="mb-3 grid gap-3 sm:grid-cols-[1fr_auto_auto_auto_auto]">
               <label className="flex flex-col gap-1 text-sm">
                 Name
                 <input
@@ -1472,9 +1983,23 @@ export default function Home() {
               <button
                 type="button"
                 className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
+                onClick={() => void handleCopySettings()}
+              >
+                Copy JSON
+              </button>
+              <button
+                type="button"
+                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
                 onClick={() => settingsFileInputRef.current?.click()}
               >
                 Upload JSON
+              </button>
+              <button
+                type="button"
+                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
+                onClick={handleResetDefaults}
+              >
+                Reset Defaults
               </button>
               <input
                 ref={settingsFileInputRef}
@@ -1488,7 +2013,7 @@ export default function Home() {
               <p className="mb-3 text-xs text-red-600">{settingsModalError}</p>
             ) : null}
             <pre className="max-h-[70vh] overflow-auto rounded border border-zinc-200 p-3 text-xs">
-              {JSON.stringify(spec, null, 2)}
+              {JSON.stringify(settingsPayload, null, 2)}
             </pre>
           </div>
         </div>

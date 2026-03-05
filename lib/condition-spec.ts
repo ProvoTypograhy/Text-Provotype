@@ -2,12 +2,15 @@ export type ConditionSpec = {
   version: "0.1";
   mode: "rsvp" | "continuous";
   window: { width: number; height: number };
-  tokenization: { unit: "char" | "word" | "chunk" | "sentence"; chunkSize: number };
+  tokenization: { unit: "char" | "word" | "chunk" | "sentence" | "paragraph"; chunkSize: number };
   typography: {
     fontFamily: string;
     fontSizePx: number;
     lineHeight: number;
+    useViewportWidth: boolean;
     lineWidthPx: number;
+    viewportPaddingPx: number;
+    alignment: "left" | "center" | "right" | "justify";
     letterSpacingPx: number;
     wordSpacingPx: number;
     variableAxes?: Record<string, number>;
@@ -24,6 +27,7 @@ export type ConditionSpec = {
       resetOnLeave: boolean;
     };
     direction: "vertical" | "horizontal";
+    wrapVerticalText: boolean;
     progression: "continuous" | "step";
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
   };
@@ -38,14 +42,17 @@ export const conditionSpec: ConditionSpec = {
     fontFamily: "Geist",
     fontSizePx: 36,
     lineHeight: 1.4,
+    useViewportWidth: true,
     lineWidthPx: 720,
+    viewportPaddingPx: 16,
+    alignment: "center",
     letterSpacingPx: 0,
     wordSpacingPx: 0,
     variableAxes: { wght: 450, wdth: 100, opsz: 36 },
   },
   motion: {
     autoplay: true,
-    speed: { unit: "cps", value: 24 },
+    speed: { unit: "cps", value: 10 },
     rateControl: {
       enabled: false,
       source: "mouseY",
@@ -55,6 +62,7 @@ export const conditionSpec: ConditionSpec = {
       resetOnLeave: true,
     },
     direction: "horizontal",
+    wrapVerticalText: true,
     progression: "step",
     pauseAtPunctuation: { enabled: false, delayMs: 250 },
   },
