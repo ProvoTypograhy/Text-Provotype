@@ -23,9 +23,15 @@ export type ConditionSpec = {
       enabled: boolean;
       position: "both" | "start" | "end";
       variationMode: "shape" | "color" | "both";
-      pairingMode: "sentence" | "guide";
+      mode: "sentence" | "line";
       sizeEm: number;
       gapCh: number;
+    };
+    rsvpHighlight: {
+      enabled: boolean;
+      unit: "char" | "word" | "sentence" | "paragraph";
+      size: number;
+      style: "bold" | "background" | "outline";
     };
     variableAxes?: Record<string, number>;
   };
@@ -72,9 +78,15 @@ export const conditionSpec: ConditionSpec = {
       enabled: false,
       position: "both",
       variationMode: "both",
-      pairingMode: "sentence",
+      mode: "sentence",
       sizeEm: 0.9,
       gapCh: 0.6,
+    },
+    rsvpHighlight: {
+      enabled: false,
+      unit: "char",
+      size: 1,
+      style: "background",
     },
     variableAxes: { wght: 450, wdth: 100, opsz: 36 },
   },

@@ -34,8 +34,8 @@ You need `Node.js` and `npm` installed locally.
 - Optional staircase max width can make the right edge step too
 - Sentence staircase works in sentence and paragraph views
 - Sentence staircase works in both RSVP and continuous rendering when sentence structure is shown
-- Sentence marker system with cycling markers per sentence and configurable position, size, and gap
-- Sentence markers can be used on their own or together with staircase layout
+- Guide marker system with `sentence` and `line` modes plus configurable position, size, and gap
+- Guide markers can be used on their own or together with staircase layout, with `line` mode using the line-based staircase renderer
 - Sentence and paragraph structured rendering in continuous mode, including multiline horizontal movement
 - Paragraph-aware rendering that preserves paragraph breaks
 - Settings JSON modal for viewing the active condition spec

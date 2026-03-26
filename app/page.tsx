@@ -7,6 +7,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -181,6 +182,142 @@ function splitAroundCenterCharacter(value: string): {
   };
 }
 
+function getHighlightSegments(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+): {
+  before: string;
+  highlight: string;
+  after: string;
+} {
+  if (!value) {
+    return { before: "", highlight: "", after: "" };
+  }
+
+  if (unit === "word") {
+    const wordMatches = Array.from(value.matchAll(/\S+/g));
+    if (!wordMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, wordMatches.length));
+    const startWordIndex = Math.max(
+      0,
+      Math.floor((wordMatches.length - clampedSize) / 2),
+    );
+    const endWordIndex = startWordIndex + clampedSize - 1;
+    const startMatch = wordMatches[startWordIndex];
+    const endMatch = wordMatches[endWordIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex =
+      (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return {
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    };
+  }
+
+  if (unit === "sentence") {
+    const sentenceMatches = Array.from(value.matchAll(SENTENCE_REGEX));
+    if (!sentenceMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, sentenceMatches.length));
+    const startSentenceIndex = Math.max(
+      0,
+      Math.floor((sentenceMatches.length - clampedSize) / 2),
+    );
+    const endSentenceIndex = startSentenceIndex + clampedSize - 1;
+    const startMatch = sentenceMatches[startSentenceIndex];
+    const endMatch = sentenceMatches[endSentenceIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return {
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    };
+  }
+
+  if (unit === "paragraph") {
+    const paragraphMatches = Array.from(
+      value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g),
+    ).filter((match) => Boolean(match[0]?.trim()));
+    if (!paragraphMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, paragraphMatches.length));
+    const startParagraphIndex = Math.max(
+      0,
+      Math.floor((paragraphMatches.length - clampedSize) / 2),
+    );
+    const endParagraphIndex = startParagraphIndex + clampedSize - 1;
+    const startMatch = paragraphMatches[startParagraphIndex];
+    const endMatch = paragraphMatches[endParagraphIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return {
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    };
+  }
+
+  const chars = Array.from(value);
+  const clampedSize = Math.max(1, Math.min(size, chars.length));
+  const startIndex = Math.max(0, Math.floor((chars.length - clampedSize) / 2));
+  return {
+    before: chars.slice(0, startIndex).join(""),
+    highlight: chars.slice(startIndex, startIndex + clampedSize).join(""),
+    after: chars.slice(startIndex + clampedSize).join(""),
+  };
+}
+
+function getHighlightSpanStyle(
+  highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
+): CSSProperties {
+  if (highlightStyle === "bold") {
+    return { fontWeight: 700 };
+  }
+  if (highlightStyle === "outline") {
+    return {
+      boxShadow: "inset 0 0 0 2px currentColor",
+      borderRadius: "0.12em",
+      paddingInline: "0.08em",
+    };
+  }
+  return {
+    backgroundColor: "rgba(250, 204, 21, 0.45)",
+    borderRadius: "0.12em",
+    paddingInline: "0.08em",
+  };
+}
+
+function HighlightedToken({
+  token,
+  unit,
+  size,
+  style,
+  preserveWhitespace = false,
+}: {
+  token: string;
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
+  size: number;
+  style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
+  preserveWhitespace?: boolean;
+}) {
+  const { before, highlight, after } = getHighlightSegments(token, unit, size);
+  const highlightStyle = getHighlightSpanStyle(style);
+  return (
+    <span className={preserveWhitespace ? "whitespace-pre-wrap" : undefined}>
+      <span>{before}</span>
+      {highlight ? <span style={highlightStyle}>{highlight}</span> : null}
+      <span>{after}</span>
+    </span>
+  );
+}
+
 function endsWithPausePunctuation(token: string): boolean {
   return /[.,!?;:]["')\]]?$/.test(token.trim());
 }
@@ -298,23 +435,23 @@ function getSentenceMarkerColor(shape: string): string {
 const SENTENCE_MARKER_CYCLE = ["circle", "square", "diamond", "triangle"] as const;
 
 function getMarkerVariantIndex({
-  sentenceIndex,
-  sentenceCount,
+  unitIndex,
+  unitCount,
   side,
-  pairingMode,
+  mode,
 }: {
-  sentenceIndex: number;
-  sentenceCount: number;
+  unitIndex: number;
+  unitCount: number;
   side: "start" | "end";
-  pairingMode: ConditionSpec["typography"]["sentenceMarkers"]["pairingMode"];
+  mode: ConditionSpec["typography"]["sentenceMarkers"]["mode"];
 }) {
-  if (pairingMode === "sentence") {
-    return sentenceIndex;
+  if (mode === "line" && unitCount <= 0) {
+    return null;
   }
   if (side === "start") {
-    return sentenceIndex === 0 ? null : sentenceIndex - 1;
+    return unitIndex === 0 ? null : unitIndex - 1;
   }
-  return sentenceIndex >= sentenceCount - 1 ? null : sentenceIndex;
+  return unitIndex >= unitCount - 1 ? null : unitIndex;
 }
 
 function getSentenceMarkerAppearance({
@@ -337,6 +474,54 @@ function getSentenceMarkerAppearance({
   };
 }
 
+type RenderedLineRect = {
+  top: number;
+  left: number;
+  right: number;
+  height: number;
+};
+
+function renderLineRectsFromElement(
+  container: HTMLElement,
+  target: HTMLElement,
+): RenderedLineRect[] {
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  const rawRects = Array.from(range.getClientRects()).filter(
+    (rect) => rect.width > 0 || rect.height > 0,
+  );
+  range.detach?.();
+
+  if (!rawRects.length) {
+    return [];
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const grouped: RenderedLineRect[] = [];
+
+  rawRects.forEach((rect) => {
+    const top = rect.top - containerRect.top;
+    const left = rect.left - containerRect.left;
+    const right = rect.right - containerRect.left;
+    const existing = grouped.find((entry) => Math.abs(entry.top - top) < 1);
+    if (existing) {
+      existing.left = Math.min(existing.left, left);
+      existing.right = Math.max(existing.right, right);
+      existing.height = Math.max(existing.height, rect.height);
+      return;
+    }
+    grouped.push({
+      top,
+      left,
+      right,
+      height: rect.height,
+    });
+  });
+
+  grouped.sort((a, b) => a.top - b.top);
+  return grouped;
+}
+
 function countTextUnits(value: string): number {
   return Array.from(value).length;
 }
@@ -348,9 +533,18 @@ type StaircaseLinePart = {
   isSentenceEnd: boolean;
 };
 
+type StaircaseAppendInput = {
+  rawText: string;
+  sentenceIndex: number;
+  isSentenceStart: boolean;
+  isSentenceEnd: boolean;
+};
+
 type StaircaseParagraphLine = {
   lineIndex: number;
   parts: StaircaseLinePart[];
+  continuationFromPreviousLineIndex: number | null;
+  continuationToNextLineIndex: number | null;
 };
 
 function buildParagraphStaircaseLines({
@@ -377,6 +571,8 @@ function buildParagraphStaircaseLines({
     lines.push({
       lineIndex: currentLineIndex,
       parts: currentLineParts,
+      continuationFromPreviousLineIndex: null,
+      continuationToNextLineIndex: null,
     });
     currentLineParts = [];
     currentLineText = "";
@@ -388,7 +584,7 @@ function buildParagraphStaircaseLines({
     sentenceIndex,
     isSentenceStart,
     isSentenceEnd,
-  }: StaircaseLinePart) => {
+  }: StaircaseAppendInput) => {
     let remaining = rawText;
     let atSentenceStart = isSentenceStart;
 
@@ -452,6 +648,28 @@ function buildParagraphStaircaseLines({
   });
 
   pushCurrentLine();
+
+  let continuationIndex = 0;
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const currentLine = lines[index];
+    const nextLine = lines[index + 1];
+    const currentLastPart = currentLine.parts[currentLine.parts.length - 1];
+    const nextFirstPart = nextLine.parts[0];
+    if (!currentLastPart || !nextFirstPart) {
+      continue;
+    }
+    const continuesAcrossLines =
+      currentLastPart.sentenceIndex === nextFirstPart.sentenceIndex &&
+      !currentLastPart.isSentenceEnd &&
+      !nextFirstPart.isSentenceStart;
+    if (!continuesAcrossLines) {
+      continue;
+    }
+    currentLine.continuationToNextLineIndex = continuationIndex;
+    nextLine.continuationFromPreviousLineIndex = continuationIndex;
+    continuationIndex += 1;
+  }
+
   return lines;
 }
 
@@ -468,6 +686,130 @@ function getApproximateStaircaseWidthCh({
     return maxWidthCh;
   }
   return Math.max(24, Math.round(lineWidthPx / Math.max(1, fontSizePx * 0.6)));
+}
+
+function LineMarkerParagraph({
+  sentenceLayouts,
+  sentenceMarkers,
+  showStartMarker,
+  showEndMarker,
+}: {
+  sentenceLayouts: Array<{
+    key: string;
+    sentence: string;
+    sentenceStyle: CSSProperties;
+  }>;
+  sentenceMarkers: ConditionSpec["typography"]["sentenceMarkers"];
+  showStartMarker: boolean;
+  showEndMarker: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const sentenceRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [lineRects, setLineRects] = useState<RenderedLineRect[]>([]);
+  const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateLineRects = () => {
+      const nextLineRects = sentenceLayouts.flatMap((_, sentenceIndex) => {
+        const sentenceNode = sentenceRefs.current[sentenceIndex];
+        if (!sentenceNode) {
+          return [];
+        }
+        return renderLineRectsFromElement(container, sentenceNode);
+      });
+      setLineRects(nextLineRects);
+    };
+
+    updateLineRects();
+    const observer = new ResizeObserver(updateLineRects);
+    observer.observe(container);
+    sentenceRefs.current.forEach((sentenceNode) => {
+      if (sentenceNode) {
+        observer.observe(sentenceNode);
+      }
+    });
+    return () => observer.disconnect();
+  }, [sentenceLayouts]);
+
+  const getMarkerStyle = (
+    lineRect: RenderedLineRect,
+    side: "start" | "end",
+    color: string | undefined,
+  ): CSSProperties => ({
+    position: "absolute",
+    top: lineRect.top,
+    left: side === "start" ? lineRect.left : lineRect.right,
+    transform:
+      side === "start"
+        ? `translateX(calc(-100% - ${markerGap}))`
+        : `translateX(${markerGap})`,
+    color,
+    fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+    lineHeight: `${lineRect.height}px`,
+    pointerEvents: "none",
+    zIndex: 1,
+  });
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative"
+    >
+      {lineRects.map((lineRect, lineIndex) => {
+        const startMarker =
+          lineIndex > 0
+            ? getSentenceMarkerAppearance({
+                variantIndex: lineIndex - 1,
+                variationMode: sentenceMarkers.variationMode,
+              })
+            : null;
+        const endMarker =
+          lineIndex < lineRects.length - 1
+            ? getSentenceMarkerAppearance({
+                variantIndex: lineIndex,
+                variationMode: sentenceMarkers.variationMode,
+              })
+            : null;
+        return (
+          <span key={`line-guide-${lineIndex}`}>
+            {showStartMarker && startMarker ? (
+              <span
+                aria-hidden="true"
+                style={getMarkerStyle(lineRect, "start", startMarker.color)}
+              >
+                {startMarker.glyph}
+              </span>
+            ) : null}
+            {showEndMarker && endMarker ? (
+              <span
+                aria-hidden="true"
+                style={getMarkerStyle(lineRect, "end", endMarker.color)}
+              >
+                {endMarker.glyph}
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+      {sentenceLayouts.map((layout, sentenceIndex) => (
+        <div
+          key={layout.key}
+          ref={(node) => {
+            sentenceRefs.current[sentenceIndex] = node;
+          }}
+          className="max-w-full"
+          style={layout.sentenceStyle}
+        >
+          {layout.sentence}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function SentenceStructuredRenderer({
@@ -503,6 +845,23 @@ function SentenceStructuredRenderer({
   const showEndMarker =
     sentenceMarkers.enabled &&
     (sentenceMarkers.position === "both" || sentenceMarkers.position === "end");
+  const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
+  const getAbsoluteMarkerStyle = (
+    side: "start" | "end",
+    color: string | undefined,
+  ): CSSProperties => ({
+    position: "absolute",
+    top: 0,
+    [side === "start" ? "left" : "right"]: 0,
+    transform:
+      side === "start"
+        ? `translateX(calc(-100% - ${markerGap}))`
+        : `translateX(${markerGap})`,
+    color,
+    fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+    lineHeight: "inherit",
+    pointerEvents: "none",
+  });
 
   if (!paragraphs.length) {
     return null;
@@ -513,8 +872,11 @@ function SentenceStructuredRenderer({
       {paragraphs.map((paragraph, paragraphIndex) => {
         const sentences = splitParagraphIntoSentences(paragraph);
         const sentenceCount = sentences.length;
+        const effectiveMarkerMode =
+          sentenceMarkers.mode === "line" ? "line" : "sentence";
+        const useLineLayout = indentMode === "line";
         const paragraphLines =
-          indentMode === "line"
+          useLineLayout
             ? buildParagraphStaircaseLines({
                 paragraph,
                 startLineIndex: 0,
@@ -528,16 +890,34 @@ function SentenceStructuredRenderer({
             : null;
         return (
           <div key={`${paragraphIndex}-${paragraph.slice(0, 32)}`}>
-            {indentMode === "line" && paragraphLines ? (
+            {useLineLayout && paragraphLines ? (
               paragraphLines.map((line, lineIndex) => {
-                const lineIndent = staircaseEnabled
+                const lineIndent =
+                  staircaseEnabled && indentMode === "line"
                   ? line.lineIndex * safeIndentStepCh
                   : 0;
                 const lineWidthCh = Math.max(6, staircaseWidthCh - lineIndent);
+                const constrainLineWidth =
+                  indentMode === "line" || maxWidthCh > 0;
                 const lineStyle: CSSProperties = {
+                  position: "relative",
                   marginLeft: `${lineIndent}ch`,
-                  maxWidth: `${lineWidthCh}ch`,
+                  maxWidth: constrainLineWidth ? `${lineWidthCh}ch` : undefined,
                 };
+                const startLineMarker =
+                  line.continuationFromPreviousLineIndex == null
+                    ? null
+                    : getSentenceMarkerAppearance({
+                        variantIndex: line.continuationFromPreviousLineIndex,
+                        variationMode: sentenceMarkers.variationMode,
+                      });
+                const endLineMarker =
+                  line.continuationToNextLineIndex == null
+                    ? null
+                    : getSentenceMarkerAppearance({
+                        variantIndex: line.continuationToNextLineIndex,
+                        variationMode: sentenceMarkers.variationMode,
+                      });
 
                 return (
                   <div
@@ -545,19 +925,31 @@ function SentenceStructuredRenderer({
                     className="max-w-full"
                     style={lineStyle}
                   >
+                    {showStartMarker &&
+                    effectiveMarkerMode === "line" &&
+                    startLineMarker ? (
+                      <span
+                        aria-hidden="true"
+                        style={getAbsoluteMarkerStyle(
+                          "start",
+                          startLineMarker.color,
+                        )}
+                      >
+                        {startLineMarker.glyph}
+                      </span>
+                    ) : null}
                     {line.parts.map((part, partIndex) => {
-                      const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
                       const startMarkerVariant = getMarkerVariantIndex({
-                        sentenceIndex: part.sentenceIndex,
-                        sentenceCount,
+                        unitIndex: part.sentenceIndex,
+                        unitCount: sentenceCount,
                         side: "start",
-                        pairingMode: sentenceMarkers.pairingMode,
+                        mode: effectiveMarkerMode,
                       });
                       const endMarkerVariant = getMarkerVariantIndex({
-                        sentenceIndex: part.sentenceIndex,
-                        sentenceCount,
+                        unitIndex: part.sentenceIndex,
+                        unitCount: sentenceCount,
                         side: "end",
-                        pairingMode: sentenceMarkers.pairingMode,
+                        mode: effectiveMarkerMode,
                       });
                       const startMarker =
                         startMarkerVariant == null
@@ -576,7 +968,10 @@ function SentenceStructuredRenderer({
 
                       return (
                         <span key={`${paragraphIndex}-line-${lineIndex}-part-${partIndex}`}>
-                          {showStartMarker && part.isSentenceStart && startMarker ? (
+                          {showStartMarker &&
+                          effectiveMarkerMode === "sentence" &&
+                          part.isSentenceStart &&
+                          startMarker ? (
                             <span
                               aria-hidden="true"
                               className="shrink-0 leading-[inherit]"
@@ -590,7 +985,10 @@ function SentenceStructuredRenderer({
                             </span>
                           ) : null}
                           <span>{part.text}</span>
-                          {showEndMarker && part.isSentenceEnd && endMarker ? (
+                          {showEndMarker &&
+                          effectiveMarkerMode === "sentence" &&
+                          part.isSentenceEnd &&
+                          endMarker ? (
                             <span
                               aria-hidden="true"
                               className="leading-[inherit]"
@@ -606,26 +1004,50 @@ function SentenceStructuredRenderer({
                         </span>
                       );
                     })}
+                    {showEndMarker &&
+                    effectiveMarkerMode === "line" &&
+                    endLineMarker ? (
+                      <span
+                        aria-hidden="true"
+                        style={getAbsoluteMarkerStyle(
+                          "end",
+                          endLineMarker.color,
+                        )}
+                      >
+                        {endLineMarker.glyph}
+                      </span>
+                    ) : null}
                   </div>
                 );
               })
             ) : null}
             {sentences.map((sentence, sentenceIndex) => {
-              if (indentMode === "line") {
+              if (useLineLayout || effectiveMarkerMode === "line") {
                 return null;
               }
-              const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
+              const sentenceIndent = staircaseEnabled
+                ? sentenceIndex * safeIndentStepCh
+                : 0;
+              const sentenceWidthCh =
+                maxWidthCh > 0
+                  ? Math.max(6, staircaseWidthCh - sentenceIndent)
+                  : undefined;
+              const sentenceStyle: CSSProperties = {
+                marginLeft: `${sentenceIndent}ch`,
+                maxWidth:
+                  sentenceWidthCh != null ? `${sentenceWidthCh}ch` : undefined,
+              };
               const startMarkerVariant = getMarkerVariantIndex({
-                sentenceIndex,
-                sentenceCount,
+                unitIndex: sentenceIndex,
+                unitCount: sentenceCount,
                 side: "start",
-                pairingMode: sentenceMarkers.pairingMode,
+                mode: "sentence",
               });
               const endMarkerVariant = getMarkerVariantIndex({
-                sentenceIndex,
-                sentenceCount,
+                unitIndex: sentenceIndex,
+                unitCount: sentenceCount,
                 side: "end",
-                pairingMode: sentenceMarkers.pairingMode,
+                mode: "sentence",
               });
               const startMarker =
                 startMarkerVariant == null
@@ -641,19 +1063,6 @@ function SentenceStructuredRenderer({
                       variantIndex: endMarkerVariant,
                       variationMode: sentenceMarkers.variationMode,
                     });
-              const sentenceIndent = staircaseEnabled
-                ? sentenceIndex * safeIndentStepCh
-                : 0;
-              const sentenceWidthCh =
-                maxWidthCh > 0
-                  ? Math.max(6, staircaseWidthCh - sentenceIndent)
-                  : undefined;
-              const sentenceStyle: CSSProperties = {
-                marginLeft: `${sentenceIndent}ch`,
-                maxWidth:
-                  sentenceWidthCh != null ? `${sentenceWidthCh}ch` : undefined,
-              };
-
               return (
                 <div
                   key={`${paragraphIndex}-${sentenceIndex}`}
@@ -692,6 +1101,33 @@ function SentenceStructuredRenderer({
                 </div>
               );
             })}
+            {!useLineLayout && effectiveMarkerMode === "line" ? (
+              <LineMarkerParagraph
+                sentenceLayouts={sentences.map((sentence, sentenceIndex) => {
+                  const sentenceIndent = staircaseEnabled
+                    ? sentenceIndex * safeIndentStepCh
+                    : 0;
+                  const sentenceWidthCh =
+                    maxWidthCh > 0
+                      ? Math.max(6, staircaseWidthCh - sentenceIndent)
+                      : undefined;
+                  return {
+                    key: `${paragraphIndex}-${sentenceIndex}`,
+                    sentence,
+                    sentenceStyle: {
+                      marginLeft: `${sentenceIndent}ch`,
+                      maxWidth:
+                        sentenceWidthCh != null
+                          ? `${sentenceWidthCh}ch`
+                          : undefined,
+                    } satisfies CSSProperties,
+                  };
+                })}
+                sentenceMarkers={sentenceMarkers}
+                showStartMarker={showStartMarker}
+                showEndMarker={showEndMarker}
+              />
+            ) : null}
           </div>
         );
       })}
@@ -710,10 +1146,15 @@ function RsvpRenderer({
 }) {
   const alignment = spec.typography.alignment;
   const textAlign = alignment === "justify" ? "justify" : alignment;
+  const rsvpHighlight =
+    spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
+  const highlightEnabled =
+    spec.mode === "rsvp" && rsvpHighlight.enabled;
   const isSentenceOrParagraph =
     viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
   const useSentenceStructuredLayout =
     isSentenceOrParagraph &&
+    !highlightEnabled &&
     (spec.typography.paragraphStaircase.enabled ||
       spec.typography.sentenceMarkers.enabled);
   const horizontalJustify = isSentenceOrParagraph
@@ -728,7 +1169,12 @@ function RsvpRenderer({
   const multilineToken = viewportStep.startsWith("sentence")
     ? formatTokenAsSentenceLines(token)
     : token;
-  const { left, center, right } = splitAroundCenterCharacter(token);
+  const highlightUnit = rsvpHighlight.unit;
+  const highlightSize = rsvpHighlight.size;
+  const highlightStyle = rsvpHighlight.style;
+  const { left, center, right } = highlightEnabled
+    ? { left: "", center: "", right: "" }
+    : splitAroundCenterCharacter(token);
   return (
     <div
       className="flex h-full w-full items-center"
@@ -771,16 +1217,39 @@ function RsvpRenderer({
                 sentenceMarkers={spec.typography.sentenceMarkers}
               />
             ) : (
-              <div className="whitespace-pre-wrap">{multilineToken}</div>
+              <div className="whitespace-pre-wrap">
+                {highlightEnabled ? (
+                  <HighlightedToken
+                    token={multilineToken}
+                    unit={highlightUnit}
+                    size={highlightSize}
+                    style={highlightStyle}
+                    preserveWhitespace
+                  />
+                ) : (
+                  multilineToken
+                )}
+              </div>
             )
           ) : (
-            <>
-              <span className="justify-self-end whitespace-pre text-right">
-                {left}
-              </span>
-              <span className="whitespace-pre">{center}</span>
-              <span className="whitespace-pre text-left">{right}</span>
-            </>
+            highlightEnabled ? (
+              <div className="col-span-3 text-center whitespace-pre">
+                <HighlightedToken
+                  token={token}
+                  unit={highlightUnit}
+                  size={highlightSize}
+                  style={highlightStyle}
+                />
+              </div>
+            ) : (
+              <>
+                <span className="justify-self-end whitespace-pre text-right">
+                  {left}
+                </span>
+                <span className="whitespace-pre">{center}</span>
+                <span className="whitespace-pre text-left">{right}</span>
+              </>
+            )
           )
         ) : (
           <span className="col-span-3 text-center">Enter text to begin</span>
@@ -1039,6 +1508,9 @@ function Viewport({
 export default function Home() {
   const [spec, setSpec] = useState<ConditionSpec>({
     ...conditionSpec,
+    typography: {
+      ...conditionSpec.typography,
+    },
     motion: {
       ...conditionSpec.motion,
       speed: { ...conditionSpec.motion.speed, unit: "cps" },
@@ -1071,6 +1543,27 @@ export default function Home() {
     verticalSign: 1 | -1;
   } | null>(null);
   const settingsFileInputRef = useRef<HTMLInputElement | null>(null);
+  const rsvpHighlight =
+    spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
+  const allowedHighlightSteps = useMemo(
+    () =>
+      RSVP_STEPS.slice(
+        0,
+        Math.max(1, getStepIndex(viewportStep, "rsvp") + 1),
+      ),
+    [viewportStep],
+  );
+  const currentHighlightStep = getViewportStepFromTokenization(
+    rsvpHighlight.unit,
+    rsvpHighlight.size,
+  );
+  const highlightStep = allowedHighlightSteps.includes(currentHighlightStep)
+    ? currentHighlightStep
+    : allowedHighlightSteps[allowedHighlightSteps.length - 1] ?? "letter-1";
+  const highlightStepIndex = Math.max(
+    0,
+    allowedHighlightSteps.indexOf(highlightStep),
+  );
 
   const appendLog = useCallback((entry: LogEntry) => {
     const next = [...logsRef.current, entry];
@@ -1153,6 +1646,31 @@ export default function Home() {
   );
   const canManualAdvance =
     spec.mode === "rsvp" && !spec.motion.autoplay && rsvpTokens.length > 0;
+
+  useEffect(() => {
+    if (highlightStep === currentHighlightStep) {
+      return;
+    }
+    const nextHighlightTokenization = getTokenizationFromViewportStep(highlightStep);
+    setSpec((prev) => ({
+      ...prev,
+      typography: {
+        ...prev.typography,
+        rsvpHighlight: {
+          ...(prev.typography.rsvpHighlight ??
+            conditionSpec.typography.rsvpHighlight),
+          unit:
+            nextHighlightTokenization.unit === "char" ||
+            nextHighlightTokenization.unit === "word" ||
+            nextHighlightTokenization.unit === "sentence" ||
+            nextHighlightTokenization.unit === "paragraph"
+              ? nextHighlightTokenization.unit
+              : "char",
+          size: nextHighlightTokenization.chunkSize,
+        },
+      },
+    }));
+  }, [currentHighlightStep, highlightStep]);
 
   const handleViewportMouseMove = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -1443,9 +1961,15 @@ export default function Home() {
 
   const handleUploadSettingsFile = useCallback(async (file: File) => {
     const raw = await file.text();
-    const parsed = JSON.parse(raw) as Partial<ConditionSpec> & {
+    const parsed = JSON.parse(raw) as Omit<Partial<ConditionSpec>, "typography" | "motion"> & {
+      typography?: Partial<ConditionSpec["typography"]> & {
+        sentenceMarkers?: Partial<ConditionSpec["typography"]["sentenceMarkers"]> & {
+          pairingMode?: "sentence" | "guide";
+        };
+        rsvpHighlight?: Partial<ConditionSpec["typography"]["rsvpHighlight"]>;
+      };
       ui?: SettingsJson["ui"];
-      motion?: Partial<ConditionSpec["motion"]> & {
+      motion?: Omit<Partial<ConditionSpec["motion"]>, "speed"> & {
         speed?: { unit?: string; value?: number };
         rateControl?: Partial<ConditionSpec["motion"]["rateControl"]>;
       };
@@ -1533,11 +2057,14 @@ export default function Home() {
             parsed.typography?.sentenceMarkers?.variationMode === "both"
               ? parsed.typography.sentenceMarkers.variationMode
               : conditionSpec.typography.sentenceMarkers.variationMode,
-          pairingMode:
-            parsed.typography?.sentenceMarkers?.pairingMode === "sentence" ||
-            parsed.typography?.sentenceMarkers?.pairingMode === "guide"
-              ? parsed.typography.sentenceMarkers.pairingMode
-              : conditionSpec.typography.sentenceMarkers.pairingMode,
+          mode:
+            parsed.typography?.sentenceMarkers?.mode === "sentence" ||
+            parsed.typography?.sentenceMarkers?.mode === "line"
+              ? parsed.typography.sentenceMarkers.mode
+              : parsed.typography?.sentenceMarkers?.pairingMode === "guide" ||
+                  parsed.typography?.sentenceMarkers?.pairingMode === "sentence"
+                ? "sentence"
+                : conditionSpec.typography.sentenceMarkers.mode,
           sizeEm: Math.max(
             0.4,
             Number(parsed.typography?.sentenceMarkers?.sizeEm) ||
@@ -1548,6 +2075,33 @@ export default function Home() {
             Number(parsed.typography?.sentenceMarkers?.gapCh) ||
               conditionSpec.typography.sentenceMarkers.gapCh,
           ),
+        },
+        rsvpHighlight: {
+          ...conditionSpec.typography.rsvpHighlight,
+          ...parsed.typography?.rsvpHighlight,
+          enabled:
+            typeof parsed.typography?.rsvpHighlight?.enabled === "boolean"
+              ? parsed.typography.rsvpHighlight.enabled
+              : conditionSpec.typography.rsvpHighlight.enabled,
+          unit:
+            parsed.typography?.rsvpHighlight?.unit === "char" ||
+            parsed.typography?.rsvpHighlight?.unit === "word" ||
+            parsed.typography?.rsvpHighlight?.unit === "sentence" ||
+            parsed.typography?.rsvpHighlight?.unit === "paragraph"
+              ? parsed.typography.rsvpHighlight.unit
+              : conditionSpec.typography.rsvpHighlight.unit,
+          size: clamp(
+            Number(parsed.typography?.rsvpHighlight?.size) ||
+              conditionSpec.typography.rsvpHighlight.size,
+            1,
+            3,
+          ),
+          style:
+            parsed.typography?.rsvpHighlight?.style === "bold" ||
+            parsed.typography?.rsvpHighlight?.style === "background" ||
+            parsed.typography?.rsvpHighlight?.style === "outline"
+              ? parsed.typography.rsvpHighlight.style
+              : conditionSpec.typography.rsvpHighlight.style,
         },
       },
       motion: {
@@ -1563,7 +2117,10 @@ export default function Home() {
           unit:
             parsed.motion?.speed?.unit === "wpm"
               ? "cps"
-              : (parsed.motion?.speed?.unit ?? conditionSpec.motion.speed.unit),
+              : parsed.motion?.speed?.unit === "cps" ||
+                  parsed.motion?.speed?.unit === "pxps"
+                ? parsed.motion.speed.unit
+                : conditionSpec.motion.speed.unit,
           value:
             parsed.motion?.speed?.unit === "wpm"
               ? Math.max(
@@ -2451,6 +3008,116 @@ export default function Home() {
                         <div className="flex items-center gap-2">
                           <input
                             type="checkbox"
+                            checked={rsvpHighlight.enabled}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  rsvpHighlight: {
+                                    ...(
+                                      prev.typography.rsvpHighlight ??
+                                      conditionSpec.typography.rsvpHighlight
+                                    ),
+                                    enabled: e.target.checked,
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                          <span>Enable Highlight</span>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex flex-col gap-1">
+                            Highlight Style
+                            <select
+                              className="rounded border border-zinc-300 px-2 py-1"
+                              disabled={!rsvpHighlight.enabled}
+                              value={rsvpHighlight.style}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    rsvpHighlight: {
+                                      ...(
+                                        prev.typography.rsvpHighlight ??
+                                        conditionSpec.typography.rsvpHighlight
+                                      ),
+                                      style: e.target
+                                        .value as ConditionSpec["typography"]["rsvpHighlight"]["style"],
+                                    },
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="bold">bold</option>
+                              <option value="background">background</option>
+                              <option value="outline">outline</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          Highlight Size: {VIEWPORT_STEP_LABELS[highlightStep]}
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={0}
+                            max={Math.max(0, allowedHighlightSteps.length - 1)}
+                            step={1}
+                            disabled={!rsvpHighlight.enabled}
+                            value={highlightStepIndex}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  rsvpHighlight: {
+                                    ...(
+                                      prev.typography.rsvpHighlight ??
+                                      conditionSpec.typography.rsvpHighlight
+                                    ),
+                                    unit:
+                                      getTokenizationFromViewportStep(
+                                        allowedHighlightSteps[
+                                          Math.max(
+                                            0,
+                                            Math.min(
+                                              allowedHighlightSteps.length - 1,
+                                              Number(e.target.value) || 0,
+                                            ),
+                                          )
+                                        ] ?? "letter-1",
+                                      ).unit as ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+                                    size: clamp(
+                                      getTokenizationFromViewportStep(
+                                        allowedHighlightSteps[
+                                          Math.max(
+                                            0,
+                                            Math.min(
+                                              allowedHighlightSteps.length - 1,
+                                              Number(e.target.value) || 0,
+                                            ),
+                                          )
+                                        ] ?? "letter-1",
+                                      ).chunkSize,
+                                      1,
+                                      3,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <p className="text-xs text-zinc-500">
+                          Uses the same step ladder as Viewport Step, capped at the current viewport setting.
+                        </p>
+                      </section>
+                      <section className="space-y-3 rounded border border-zinc-200 p-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
                             checked={spec.typography.paragraphStaircase.enabled}
                             onChange={(e) =>
                               setSpec((prev) => ({
@@ -2578,7 +3245,7 @@ export default function Home() {
                               }))
                             }
                           />
-                          <span>Enable sentence markers</span>
+                          <span>Enable guide markers</span>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="flex flex-col gap-1">
@@ -2632,11 +3299,11 @@ export default function Home() {
                             </select>
                           </label>
                           <label className="flex flex-col gap-1">
-                            Marker Mapping
+                            Guide Mode
                             <select
                               className="rounded border border-zinc-300 px-2 py-1"
                               disabled={!spec.typography.sentenceMarkers.enabled}
-                              value={spec.typography.sentenceMarkers.pairingMode}
+                              value={spec.typography.sentenceMarkers.mode}
                               onChange={(e) =>
                                 setSpec((prev) => ({
                                   ...prev,
@@ -2644,15 +3311,15 @@ export default function Home() {
                                     ...prev.typography,
                                     sentenceMarkers: {
                                       ...prev.typography.sentenceMarkers,
-                                      pairingMode: e.target
-                                        .value as ConditionSpec["typography"]["sentenceMarkers"]["pairingMode"],
+                                      mode: e.target
+                                        .value as ConditionSpec["typography"]["sentenceMarkers"]["mode"],
                                     },
                                   },
                                 }))
                               }
                             >
                               <option value="sentence">sentence</option>
-                              <option value="guide">guide</option>
+                              <option value="line">line</option>
                             </select>
                           </label>
                         </div>
@@ -2711,7 +3378,7 @@ export default function Home() {
                           />
                         </label>
                         <p className="text-xs text-zinc-500">
-                          Sentence pairs or guide pairs, with shape, color, or both.
+                          Sentence mode pairs adjacent sentence boundaries. Line mode pairs wrapped lines in the line-based staircase renderer and otherwise falls back to sentence mode.
                         </p>
                       </section>
                     </section>
