@@ -13,6 +13,20 @@ export type ConditionSpec = {
     alignment: "left" | "center" | "right" | "justify";
     letterSpacingPx: number;
     wordSpacingPx: number;
+    paragraphStaircase: {
+      enabled: boolean;
+      indentStepCh: number;
+      indentMode: "sentence" | "line";
+      maxWidthCh: number;
+    };
+    sentenceMarkers: {
+      enabled: boolean;
+      position: "both" | "start" | "end";
+      variationMode: "shape" | "color" | "both";
+      pairingMode: "sentence" | "guide";
+      sizeEm: number;
+      gapCh: number;
+    };
     variableAxes?: Record<string, number>;
   };
   motion: {
@@ -40,7 +54,7 @@ export const conditionSpec: ConditionSpec = {
   tokenization: { unit: "word", chunkSize: 1 },
   typography: {
     fontFamily: "Geist",
-    fontSizePx: 36,
+    fontSizePx: 20,
     lineHeight: 1.4,
     useViewportWidth: true,
     lineWidthPx: 720,
@@ -48,6 +62,20 @@ export const conditionSpec: ConditionSpec = {
     alignment: "center",
     letterSpacingPx: 0,
     wordSpacingPx: 0,
+    paragraphStaircase: {
+      enabled: false,
+      indentStepCh: 2,
+      indentMode: "sentence",
+      maxWidthCh: 0,
+    },
+    sentenceMarkers: {
+      enabled: false,
+      position: "both",
+      variationMode: "both",
+      pairingMode: "sentence",
+      sizeEm: 0.9,
+      gapCh: 0.6,
+    },
     variableAxes: { wght: 450, wdth: 100, opsz: 36 },
   },
   motion: {

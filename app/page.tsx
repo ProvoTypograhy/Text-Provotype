@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  type CSSProperties,
   type ChangeEvent,
   type MouseEvent,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -53,18 +55,18 @@ const SPEED_MAX_CPS = 80;
 const DEFAULT_TEXT_PATH = "/default-text.txt";
 const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
 const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
-  "letter-1": "1 letter",
-  "letter-2": "2 letters",
-  "letter-3": "3 letters",
-  "word-1": "1 word",
-  "word-2": "2 words",
-  "word-3": "3 words",
-  "sentence-1": "1 sentence",
-  "sentence-2": "2 sentences",
-  "sentence-3": "3 sentences",
-  "paragraph-1": "1 paragraph",
-  "paragraph-2": "2 paragraphs",
-  "paragraph-3": "3 paragraphs",
+  "letter-1": "1 L",
+  "letter-2": "2 L",
+  "letter-3": "3 L",
+  "word-1": "1 W",
+  "word-2": "2 W",
+  "word-3": "3 W",
+  "sentence-1": "1 S",
+  "sentence-2": "2 S",
+  "sentence-3": "3 S",
+  "paragraph-1": "1 P",
+  "paragraph-2": "2 P",
+  "paragraph-3": "3 P",
 };
 
 function getViewportStepsForMode(mode: ReaderMode) {
@@ -266,6 +268,437 @@ function formatTokenAsSentenceLines(value: string): string {
     .join("\n");
 }
 
+function splitTokenIntoParagraphs(value: string): string[] {
+  return value
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+function splitParagraphIntoSentences(value: string): string[] {
+  return (value.match(SENTENCE_REGEX) ?? [value])
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function getSentenceMarkerGlyph(shape: string): string {
+  if (shape === "square") return "■";
+  if (shape === "diamond") return "◆";
+  if (shape === "triangle") return "▲";
+  return "●";
+}
+
+function getSentenceMarkerColor(shape: string): string {
+  if (shape === "square") return "#2563eb";
+  if (shape === "diamond") return "#dc2626";
+  if (shape === "triangle") return "#16a34a";
+  return "#111111";
+}
+
+const SENTENCE_MARKER_CYCLE = ["circle", "square", "diamond", "triangle"] as const;
+
+function getMarkerVariantIndex({
+  sentenceIndex,
+  sentenceCount,
+  side,
+  pairingMode,
+}: {
+  sentenceIndex: number;
+  sentenceCount: number;
+  side: "start" | "end";
+  pairingMode: ConditionSpec["typography"]["sentenceMarkers"]["pairingMode"];
+}) {
+  if (pairingMode === "sentence") {
+    return sentenceIndex;
+  }
+  if (side === "start") {
+    return sentenceIndex === 0 ? null : sentenceIndex - 1;
+  }
+  return sentenceIndex >= sentenceCount - 1 ? null : sentenceIndex;
+}
+
+function getSentenceMarkerAppearance({
+  variantIndex,
+  variationMode,
+}: {
+  variantIndex: number;
+  variationMode: ConditionSpec["typography"]["sentenceMarkers"]["variationMode"];
+}) {
+  const cycledShape =
+    SENTENCE_MARKER_CYCLE[variantIndex % SENTENCE_MARKER_CYCLE.length] ?? "circle";
+  return {
+    glyph: getSentenceMarkerGlyph(
+      variationMode === "color" ? "circle" : cycledShape,
+    ),
+    color:
+      variationMode === "shape"
+        ? undefined
+        : getSentenceMarkerColor(cycledShape),
+  };
+}
+
+function countTextUnits(value: string): number {
+  return Array.from(value).length;
+}
+
+type StaircaseLinePart = {
+  text: string;
+  sentenceIndex: number;
+  isSentenceStart: boolean;
+  isSentenceEnd: boolean;
+};
+
+type StaircaseParagraphLine = {
+  lineIndex: number;
+  parts: StaircaseLinePart[];
+};
+
+function buildParagraphStaircaseLines({
+  paragraph,
+  startLineIndex,
+  getLineWidthCh,
+}: {
+  paragraph: string;
+  startLineIndex: number;
+  getLineWidthCh: (lineIndex: number) => number;
+}): StaircaseParagraphLine[] {
+  const sentences = splitParagraphIntoSentences(paragraph);
+  const lines: StaircaseParagraphLine[] = [];
+  let currentLineIndex = startLineIndex;
+  let currentLineParts: StaircaseLinePart[] = [];
+  let currentLineText = "";
+
+  const getSafeWidth = () => Math.max(6, Math.floor(getLineWidthCh(currentLineIndex)));
+
+  const pushCurrentLine = () => {
+    if (!currentLineParts.length) {
+      return;
+    }
+    lines.push({
+      lineIndex: currentLineIndex,
+      parts: currentLineParts,
+    });
+    currentLineParts = [];
+    currentLineText = "";
+    currentLineIndex += 1;
+  };
+
+  const appendText = ({
+    rawText,
+    sentenceIndex,
+    isSentenceStart,
+    isSentenceEnd,
+  }: StaircaseLinePart) => {
+    let remaining = rawText;
+    let atSentenceStart = isSentenceStart;
+
+    while (remaining) {
+      if (!currentLineText && /^\s/.test(remaining)) {
+        remaining = remaining.trimStart();
+        continue;
+      }
+
+      const availableWidth = getSafeWidth();
+      const nextValue = `${currentLineText}${remaining}`;
+      if (!currentLineText || countTextUnits(nextValue) <= availableWidth) {
+        currentLineText = nextValue;
+        currentLineParts.push({
+          text: remaining,
+          sentenceIndex,
+          isSentenceStart: atSentenceStart,
+          isSentenceEnd,
+        });
+        return;
+      }
+
+      let splitIndex = availableWidth - countTextUnits(currentLineText);
+      const sliceable = Array.from(remaining);
+      splitIndex = Math.max(1, Math.min(splitIndex, sliceable.length));
+
+      let chunk = sliceable.slice(0, splitIndex).join("");
+      const rest = sliceable.slice(splitIndex).join("");
+
+      if (sliceable.length > splitIndex) {
+        const breakpoint = Math.max(chunk.lastIndexOf(" "), chunk.lastIndexOf("\t"));
+        if (breakpoint > 0) {
+          chunk = chunk.slice(0, breakpoint + 1);
+        }
+      }
+
+      currentLineText = `${currentLineText}${chunk}`;
+      currentLineParts.push({
+        text: chunk,
+        sentenceIndex,
+        isSentenceStart: atSentenceStart,
+        isSentenceEnd: false,
+      });
+      pushCurrentLine();
+      remaining = remaining.slice(chunk.length);
+      atSentenceStart = false;
+
+      if (remaining === rest && !remaining.trim()) {
+        remaining = "";
+      }
+    }
+  };
+
+  sentences.forEach((sentence, sentenceIndex) => {
+    appendText({
+      rawText: sentence,
+      sentenceIndex,
+      isSentenceStart: true,
+      isSentenceEnd: true,
+    });
+  });
+
+  pushCurrentLine();
+  return lines;
+}
+
+function getApproximateStaircaseWidthCh({
+  maxWidthCh,
+  lineWidthPx,
+  fontSizePx,
+}: {
+  maxWidthCh: number;
+  lineWidthPx: number;
+  fontSizePx: number;
+}) {
+  if (maxWidthCh > 0) {
+    return maxWidthCh;
+  }
+  return Math.max(24, Math.round(lineWidthPx / Math.max(1, fontSizePx * 0.6)));
+}
+
+function SentenceStructuredRenderer({
+  token,
+  staircaseEnabled,
+  indentStepCh,
+  indentMode,
+  maxWidthCh,
+  fontSizePx,
+  lineWidthPx,
+  sentenceMarkers,
+}: {
+  token: string;
+  staircaseEnabled: boolean;
+  indentStepCh: number;
+  indentMode: ConditionSpec["typography"]["paragraphStaircase"]["indentMode"];
+  maxWidthCh: number;
+  fontSizePx: number;
+  lineWidthPx: number;
+  sentenceMarkers: ConditionSpec["typography"]["sentenceMarkers"];
+}) {
+  const paragraphs = splitTokenIntoParagraphs(token);
+  const safeIndentStepCh = Math.max(0, indentStepCh);
+  const staircaseWidthCh = getApproximateStaircaseWidthCh({
+    maxWidthCh,
+    lineWidthPx,
+    fontSizePx,
+  });
+  const showStartMarker =
+    sentenceMarkers.enabled &&
+    (sentenceMarkers.position === "both" ||
+      sentenceMarkers.position === "start");
+  const showEndMarker =
+    sentenceMarkers.enabled &&
+    (sentenceMarkers.position === "both" || sentenceMarkers.position === "end");
+
+  if (!paragraphs.length) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-4 whitespace-normal text-left">
+      {paragraphs.map((paragraph, paragraphIndex) => {
+        const sentences = splitParagraphIntoSentences(paragraph);
+        const sentenceCount = sentences.length;
+        const paragraphLines =
+          indentMode === "line"
+            ? buildParagraphStaircaseLines({
+                paragraph,
+                startLineIndex: 0,
+                getLineWidthCh: (lineIndex) =>
+                  Math.max(
+                    6,
+                    staircaseWidthCh -
+                      (staircaseEnabled ? lineIndex * safeIndentStepCh : 0),
+                  ),
+              })
+            : null;
+        return (
+          <div key={`${paragraphIndex}-${paragraph.slice(0, 32)}`}>
+            {indentMode === "line" && paragraphLines ? (
+              paragraphLines.map((line, lineIndex) => {
+                const lineIndent = staircaseEnabled
+                  ? line.lineIndex * safeIndentStepCh
+                  : 0;
+                const lineWidthCh = Math.max(6, staircaseWidthCh - lineIndent);
+                const lineStyle: CSSProperties = {
+                  marginLeft: `${lineIndent}ch`,
+                  maxWidth: `${lineWidthCh}ch`,
+                };
+
+                return (
+                  <div
+                    key={`${paragraphIndex}-line-${lineIndex}`}
+                    className="max-w-full"
+                    style={lineStyle}
+                  >
+                    {line.parts.map((part, partIndex) => {
+                      const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
+                      const startMarkerVariant = getMarkerVariantIndex({
+                        sentenceIndex: part.sentenceIndex,
+                        sentenceCount,
+                        side: "start",
+                        pairingMode: sentenceMarkers.pairingMode,
+                      });
+                      const endMarkerVariant = getMarkerVariantIndex({
+                        sentenceIndex: part.sentenceIndex,
+                        sentenceCount,
+                        side: "end",
+                        pairingMode: sentenceMarkers.pairingMode,
+                      });
+                      const startMarker =
+                        startMarkerVariant == null
+                          ? null
+                          : getSentenceMarkerAppearance({
+                              variantIndex: startMarkerVariant,
+                              variationMode: sentenceMarkers.variationMode,
+                            });
+                      const endMarker =
+                        endMarkerVariant == null
+                          ? null
+                          : getSentenceMarkerAppearance({
+                              variantIndex: endMarkerVariant,
+                              variationMode: sentenceMarkers.variationMode,
+                            });
+
+                      return (
+                        <span key={`${paragraphIndex}-line-${lineIndex}-part-${partIndex}`}>
+                          {showStartMarker && part.isSentenceStart && startMarker ? (
+                            <span
+                              aria-hidden="true"
+                              className="shrink-0 leading-[inherit]"
+                              style={{
+                                color: startMarker.color,
+                                fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+                                marginRight: markerGap,
+                              }}
+                            >
+                              {startMarker.glyph}
+                            </span>
+                          ) : null}
+                          <span>{part.text}</span>
+                          {showEndMarker && part.isSentenceEnd && endMarker ? (
+                            <span
+                              aria-hidden="true"
+                              className="leading-[inherit]"
+                              style={{
+                                color: endMarker.color,
+                                fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+                                marginLeft: markerGap,
+                              }}
+                            >
+                              {endMarker.glyph}
+                            </span>
+                          ) : null}
+                        </span>
+                      );
+                    })}
+                  </div>
+                );
+              })
+            ) : null}
+            {sentences.map((sentence, sentenceIndex) => {
+              if (indentMode === "line") {
+                return null;
+              }
+              const markerGap = `${Math.max(0, sentenceMarkers.gapCh)}ch`;
+              const startMarkerVariant = getMarkerVariantIndex({
+                sentenceIndex,
+                sentenceCount,
+                side: "start",
+                pairingMode: sentenceMarkers.pairingMode,
+              });
+              const endMarkerVariant = getMarkerVariantIndex({
+                sentenceIndex,
+                sentenceCount,
+                side: "end",
+                pairingMode: sentenceMarkers.pairingMode,
+              });
+              const startMarker =
+                startMarkerVariant == null
+                  ? null
+                  : getSentenceMarkerAppearance({
+                      variantIndex: startMarkerVariant,
+                      variationMode: sentenceMarkers.variationMode,
+                    });
+              const endMarker =
+                endMarkerVariant == null
+                  ? null
+                  : getSentenceMarkerAppearance({
+                      variantIndex: endMarkerVariant,
+                      variationMode: sentenceMarkers.variationMode,
+                    });
+              const sentenceIndent = staircaseEnabled
+                ? sentenceIndex * safeIndentStepCh
+                : 0;
+              const sentenceWidthCh =
+                maxWidthCh > 0
+                  ? Math.max(6, staircaseWidthCh - sentenceIndent)
+                  : undefined;
+              const sentenceStyle: CSSProperties = {
+                marginLeft: `${sentenceIndent}ch`,
+                maxWidth:
+                  sentenceWidthCh != null ? `${sentenceWidthCh}ch` : undefined,
+              };
+
+              return (
+                <div
+                  key={`${paragraphIndex}-${sentenceIndex}`}
+                  className="max-w-full"
+                  style={sentenceStyle}
+                >
+                  {showStartMarker && startMarker ? (
+                    <span
+                      aria-hidden="true"
+                      className="shrink-0 leading-[inherit]"
+                      style={{
+                        color: startMarker.color,
+                        fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+                        marginRight: markerGap,
+                      }}
+                    >
+                      {startMarker.glyph}
+                    </span>
+                  ) : null}
+                  <span>
+                    {sentence}
+                    {showEndMarker && endMarker ? (
+                      <span
+                        aria-hidden="true"
+                        className="leading-[inherit]"
+                        style={{
+                          color: endMarker.color,
+                          fontSize: `${Math.max(0.4, sentenceMarkers.sizeEm)}em`,
+                          marginLeft: markerGap,
+                        }}
+                      >
+                        {endMarker.glyph}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function RsvpRenderer({
   spec,
   token,
@@ -279,8 +712,14 @@ function RsvpRenderer({
   const textAlign = alignment === "justify" ? "justify" : alignment;
   const isSentenceOrParagraph =
     viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
+  const useSentenceStructuredLayout =
+    isSentenceOrParagraph &&
+    (spec.typography.paragraphStaircase.enabled ||
+      spec.typography.sentenceMarkers.enabled);
   const horizontalJustify = isSentenceOrParagraph
-    ? alignment === "center"
+    ? useSentenceStructuredLayout
+      ? "flex-start"
+      : alignment === "center"
       ? "center"
       : alignment === "right"
         ? "flex-end"
@@ -306,7 +745,11 @@ function RsvpRenderer({
           lineHeight: spec.typography.lineHeight,
           letterSpacing: spec.typography.letterSpacingPx,
           wordSpacing: spec.typography.wordSpacingPx,
-          textAlign: isSentenceOrParagraph ? textAlign : undefined,
+          textAlign: isSentenceOrParagraph
+            ? useSentenceStructuredLayout
+              ? "left"
+              : textAlign
+            : undefined,
           fontVariationSettings: spec.typography.variableAxes
             ? Object.entries(spec.typography.variableAxes)
                 .map(([axis, value]) => `"${axis}" ${value}`)
@@ -316,9 +759,20 @@ function RsvpRenderer({
       >
         {token ? (
           isSentenceOrParagraph ? (
-            <div className="whitespace-pre-wrap">
-              {multilineToken}
-            </div>
+            useSentenceStructuredLayout ? (
+              <SentenceStructuredRenderer
+                token={token}
+                staircaseEnabled={spec.typography.paragraphStaircase.enabled}
+                indentStepCh={spec.typography.paragraphStaircase.indentStepCh}
+                indentMode={spec.typography.paragraphStaircase.indentMode}
+                maxWidthCh={spec.typography.paragraphStaircase.maxWidthCh}
+                fontSizePx={spec.typography.fontSizePx}
+                lineWidthPx={spec.typography.lineWidthPx}
+                sentenceMarkers={spec.typography.sentenceMarkers}
+              />
+            ) : (
+              <div className="whitespace-pre-wrap">{multilineToken}</div>
+            )
           ) : (
             <>
               <span className="justify-self-end whitespace-pre text-right">
@@ -345,13 +799,22 @@ function ContinuousRsvpRenderer({
 }) {
   const [offsetPx, setOffsetPx] = useState(0);
   const direction = spec.motion.direction;
+  const isSentenceStructuredUnit =
+    spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
+  const useSentenceStructuredLayout =
+    isSentenceStructuredUnit &&
+    (spec.typography.paragraphStaircase.enabled ||
+      spec.typography.sentenceMarkers.enabled);
   const textAlign =
-    spec.typography.alignment === "justify"
+    useSentenceStructuredLayout
+      ? "left"
+      : spec.typography.alignment === "justify"
       ? "justify"
       : spec.typography.alignment;
   const pxPerSecond = speedToPxPerSecond(spec);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
+  const pxPerSecondRef = useRef(pxPerSecond);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const cycleLengthRef = useRef(2000);
   const loopGapPx = Math.max(
@@ -362,7 +825,9 @@ function ContinuousRsvpRenderer({
   );
   const text = useMemo(
     () =>
-      direction === "vertical"
+      useSentenceStructuredLayout
+        ? tokens.join(spec.tokenization.unit === "paragraph" ? "\n\n" : " ")
+        : direction === "vertical"
         ? tokens.join("\n")
         : tokens.join(
             spec.tokenization.unit === "char"
@@ -371,9 +836,13 @@ function ContinuousRsvpRenderer({
                 ? "\n\n"
                 : " ",
           ),
-    [direction, spec.tokenization.unit, tokens],
+    [direction, spec.tokenization.unit, tokens, useSentenceStructuredLayout],
   );
   const displayText = text || "Enter text to begin";
+
+  useEffect(() => {
+    pxPerSecondRef.current = pxPerSecond;
+  }, [pxPerSecond]);
 
   useEffect(() => {
     if (!spec.motion.autoplay || spec.mode !== "continuous") {
@@ -386,7 +855,7 @@ function ContinuousRsvpRenderer({
       lastTsRef.current = ts;
       setOffsetPx((prev) => {
         const cycle = Math.max(1, cycleLengthRef.current);
-        return (prev + pxPerSecond * dt) % cycle;
+        return (prev + pxPerSecondRef.current * dt) % cycle;
       });
       rafRef.current = window.requestAnimationFrame(tick);
     };
@@ -399,7 +868,7 @@ function ContinuousRsvpRenderer({
       rafRef.current = null;
       lastTsRef.current = null;
     };
-  }, [pxPerSecond, spec.mode, spec.motion.autoplay]);
+  }, [spec.mode, spec.motion.autoplay]);
 
   useEffect(() => {
     const node = measureRef.current;
@@ -440,6 +909,46 @@ function ContinuousRsvpRenderer({
     spec.typography.wordSpacingPx,
   ]);
 
+  const renderContinuousContent = (
+    measurementRef?: RefObject<HTMLDivElement | null>,
+  ) => (
+    <div
+      ref={measurementRef}
+      className={
+        useSentenceStructuredLayout
+          ? "text-left"
+          : direction === "horizontal"
+            ? "whitespace-nowrap"
+            : spec.motion.wrapVerticalText
+              ? "whitespace-pre-wrap break-words text-left"
+              : "whitespace-pre text-center"
+      }
+      style={{
+        fontFamily: spec.typography.fontFamily,
+        fontSize: spec.typography.fontSizePx,
+        lineHeight: spec.typography.lineHeight,
+        letterSpacing: spec.typography.letterSpacingPx,
+        wordSpacing: spec.typography.wordSpacingPx,
+        textAlign,
+      }}
+    >
+      {useSentenceStructuredLayout ? (
+        <SentenceStructuredRenderer
+          token={displayText}
+          staircaseEnabled={spec.typography.paragraphStaircase.enabled}
+          indentStepCh={spec.typography.paragraphStaircase.indentStepCh}
+          indentMode={spec.typography.paragraphStaircase.indentMode}
+          maxWidthCh={spec.typography.paragraphStaircase.maxWidthCh}
+          fontSizePx={spec.typography.fontSizePx}
+          lineWidthPx={spec.typography.lineWidthPx}
+          sentenceMarkers={spec.typography.sentenceMarkers}
+        />
+      ) : (
+        displayText
+      )}
+    </div>
+  );
+
   return (
     <div className="relative h-full w-full overflow-hidden">
       <div
@@ -460,34 +969,8 @@ function ContinuousRsvpRenderer({
               transform: `translateX(${-offsetPx}px)`,
             }}
           >
-            <div
-              ref={measureRef}
-              className="whitespace-nowrap"
-              style={{
-                fontFamily: spec.typography.fontFamily,
-                fontSize: spec.typography.fontSizePx,
-                lineHeight: spec.typography.lineHeight,
-                letterSpacing: spec.typography.letterSpacingPx,
-                wordSpacing: spec.typography.wordSpacingPx,
-                textAlign,
-              }}
-            >
-              {displayText}
-            </div>
-            <div
-              aria-hidden="true"
-              className="whitespace-nowrap"
-              style={{
-                fontFamily: spec.typography.fontFamily,
-                fontSize: spec.typography.fontSizePx,
-                lineHeight: spec.typography.lineHeight,
-                letterSpacing: spec.typography.letterSpacingPx,
-                wordSpacing: spec.typography.wordSpacingPx,
-                textAlign,
-              }}
-            >
-              {displayText}
-            </div>
+            {renderContinuousContent(measureRef)}
+            <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
       ) : (
@@ -499,42 +982,8 @@ function ContinuousRsvpRenderer({
               transform: `translateY(${-offsetPx}px)`,
             }}
           >
-            <div
-              ref={measureRef}
-              className={
-                spec.motion.wrapVerticalText
-                  ? "whitespace-pre-wrap break-words text-left"
-                  : "whitespace-pre text-center"
-              }
-              style={{
-                fontFamily: spec.typography.fontFamily,
-                fontSize: spec.typography.fontSizePx,
-                lineHeight: spec.typography.lineHeight,
-                letterSpacing: spec.typography.letterSpacingPx,
-                wordSpacing: spec.typography.wordSpacingPx,
-                textAlign,
-              }}
-            >
-              {displayText}
-            </div>
-            <div
-              aria-hidden="true"
-              className={
-                spec.motion.wrapVerticalText
-                  ? "whitespace-pre-wrap break-words text-left"
-                  : "whitespace-pre text-center"
-              }
-              style={{
-                fontFamily: spec.typography.fontFamily,
-                fontSize: spec.typography.fontSizePx,
-                lineHeight: spec.typography.lineHeight,
-                letterSpacing: spec.typography.letterSpacingPx,
-                wordSpacing: spec.typography.wordSpacingPx,
-                textAlign,
-              }}
-            >
-              {displayText}
-            </div>
+            {renderContinuousContent(measureRef)}
+            <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
       )}
@@ -573,7 +1022,6 @@ function Viewport({
     >
       {spec.mode === "continuous" ? (
         <ContinuousRsvpRenderer
-          key={`${spec.motion.direction}-${spec.motion.speed.value}-${continuousTokens.join("|")}`}
           spec={spec}
           tokens={continuousTokens}
         />
@@ -1043,6 +1491,64 @@ export default function Home() {
           parsed.typography?.alignment === "justify"
             ? parsed.typography.alignment
             : conditionSpec.typography.alignment,
+        paragraphStaircase: {
+          ...conditionSpec.typography.paragraphStaircase,
+          ...parsed.typography?.paragraphStaircase,
+          enabled:
+            typeof parsed.typography?.paragraphStaircase?.enabled === "boolean"
+              ? parsed.typography.paragraphStaircase.enabled
+              : conditionSpec.typography.paragraphStaircase.enabled,
+          indentStepCh: Math.max(
+            0,
+            Number(parsed.typography?.paragraphStaircase?.indentStepCh) ||
+              conditionSpec.typography.paragraphStaircase.indentStepCh,
+          ),
+          indentMode:
+            parsed.typography?.paragraphStaircase?.indentMode === "line" ||
+            parsed.typography?.paragraphStaircase?.indentMode === "sentence"
+              ? parsed.typography.paragraphStaircase.indentMode
+              : conditionSpec.typography.paragraphStaircase.indentMode,
+          maxWidthCh: Math.max(
+            0,
+            Number(parsed.typography?.paragraphStaircase?.maxWidthCh) ||
+              conditionSpec.typography.paragraphStaircase.maxWidthCh,
+          ),
+        },
+        sentenceMarkers: {
+          ...conditionSpec.typography.sentenceMarkers,
+          ...parsed.typography?.sentenceMarkers,
+          enabled:
+            typeof parsed.typography?.sentenceMarkers?.enabled === "boolean"
+              ? parsed.typography.sentenceMarkers.enabled
+              : conditionSpec.typography.sentenceMarkers.enabled,
+          position:
+            parsed.typography?.sentenceMarkers?.position === "both" ||
+            parsed.typography?.sentenceMarkers?.position === "start" ||
+            parsed.typography?.sentenceMarkers?.position === "end"
+              ? parsed.typography.sentenceMarkers.position
+              : conditionSpec.typography.sentenceMarkers.position,
+          variationMode:
+            parsed.typography?.sentenceMarkers?.variationMode === "shape" ||
+            parsed.typography?.sentenceMarkers?.variationMode === "color" ||
+            parsed.typography?.sentenceMarkers?.variationMode === "both"
+              ? parsed.typography.sentenceMarkers.variationMode
+              : conditionSpec.typography.sentenceMarkers.variationMode,
+          pairingMode:
+            parsed.typography?.sentenceMarkers?.pairingMode === "sentence" ||
+            parsed.typography?.sentenceMarkers?.pairingMode === "guide"
+              ? parsed.typography.sentenceMarkers.pairingMode
+              : conditionSpec.typography.sentenceMarkers.pairingMode,
+          sizeEm: Math.max(
+            0.4,
+            Number(parsed.typography?.sentenceMarkers?.sizeEm) ||
+              conditionSpec.typography.sentenceMarkers.sizeEm,
+          ),
+          gapCh: Math.max(
+            0,
+            Number(parsed.typography?.sentenceMarkers?.gapCh) ||
+              conditionSpec.typography.sentenceMarkers.gapCh,
+          ),
+        },
       },
       motion: {
         ...conditionSpec.motion,
@@ -1295,22 +1801,31 @@ export default function Home() {
               className="relative flex h-full items-center justify-center"
             >
               <div
-                className="relative"
+                className="relative overflow-hidden"
                 style={{
                   width: `${viewportWidthPercent}%`,
                   height: `${viewportHeightPercent}%`,
                 }}
               >
-                <Viewport
-                  spec={spec}
-                  viewportStep={viewportStep}
-                  rsvpToken={currentRsvpToken}
-                  continuousTokens={continuousTokens}
-                  manualAdvanceEnabled={canManualAdvance}
-                  onManualAdvance={() => advanceRsvp("manual")}
-                  onViewportMouseMove={handleViewportMouseMove}
-                  onViewportMouseLeave={handleViewportMouseLeave}
-                />
+                <div
+                  className="absolute left-1/2 top-1/2"
+                  style={{
+                    width: `${10000 / viewportWidthPercent}%`,
+                    height: `${10000 / viewportHeightPercent}%`,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                >
+                  <Viewport
+                    spec={spec}
+                    viewportStep={viewportStep}
+                    rsvpToken={currentRsvpToken}
+                    continuousTokens={continuousTokens}
+                    manualAdvanceEnabled={canManualAdvance}
+                    onManualAdvance={() => advanceRsvp("manual")}
+                    onViewportMouseMove={handleViewportMouseMove}
+                    onViewportMouseLeave={handleViewportMouseLeave}
+                  />
+                </div>
                 {[
                   {
                     key: "top-left",
@@ -1932,6 +2447,273 @@ export default function Home() {
                           Space between the text area and the viewport edge.
                         </span>
                       </label>
+                      <section className="space-y-3 rounded border border-zinc-200 p-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={spec.typography.paragraphStaircase.enabled}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  paragraphStaircase: {
+                                    ...prev.typography.paragraphStaircase,
+                                    enabled: e.target.checked,
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                          <span>Enable staircase</span>
+                        </div>
+                      <label className="flex flex-col gap-1">
+                        Stair Indent:{" "}
+                        {spec.typography.paragraphStaircase.indentStepCh.toFixed(
+                          1,
+                        )}
+                          ch
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={0}
+                            max={12}
+                            step={0.5}
+                            disabled={!spec.typography.paragraphStaircase.enabled}
+                            value={spec.typography.paragraphStaircase.indentStepCh}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  paragraphStaircase: {
+                                    ...prev.typography.paragraphStaircase,
+                                    indentStepCh: Math.max(
+                                      0,
+                                      Number(e.target.value) || 0,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex flex-col gap-1">
+                            Staircase Mode
+                            <select
+                              value={spec.typography.paragraphStaircase.indentMode}
+                              disabled={!spec.typography.paragraphStaircase.enabled}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    paragraphStaircase: {
+                                      ...prev.typography.paragraphStaircase,
+                                      indentMode:
+                                        e.target.value === "line"
+                                          ? "line"
+                                          : "sentence",
+                                    },
+                                  },
+                                }))
+                              }
+                              className="rounded border border-zinc-300 bg-white px-2 py-1"
+                            >
+                              <option value="sentence">By sentence</option>
+                              <option value="line">By line</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          Max Line Width:{" "}
+                          {spec.typography.paragraphStaircase.maxWidthCh > 0
+                            ? `${spec.typography.paragraphStaircase.maxWidthCh.toFixed(0)}ch`
+                            : "auto"}
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={0}
+                            max={120}
+                            step={1}
+                            disabled={!spec.typography.paragraphStaircase.enabled}
+                            value={spec.typography.paragraphStaircase.maxWidthCh}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  paragraphStaircase: {
+                                    ...prev.typography.paragraphStaircase,
+                                    maxWidthCh: Math.max(
+                                      0,
+                                      Number(e.target.value) || 0,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <p className="text-xs text-zinc-500">
+                          By line steps every wrapped line. By sentence steps only new sentences. Max line width limits each staircase line before wrapping so the right edge steps too.
+                        </p>
+                      </section>
+                      <section className="space-y-3 rounded border border-zinc-200 p-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={spec.typography.sentenceMarkers.enabled}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  sentenceMarkers: {
+                                    ...prev.typography.sentenceMarkers,
+                                    enabled: e.target.checked,
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                          <span>Enable sentence markers</span>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex flex-col gap-1">
+                            Marker Position
+                            <select
+                              className="rounded border border-zinc-300 px-2 py-1"
+                              disabled={!spec.typography.sentenceMarkers.enabled}
+                              value={spec.typography.sentenceMarkers.position}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    sentenceMarkers: {
+                                      ...prev.typography.sentenceMarkers,
+                                      position: e.target
+                                        .value as ConditionSpec["typography"]["sentenceMarkers"]["position"],
+                                    },
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="both">both</option>
+                              <option value="start">start</option>
+                              <option value="end">end</option>
+                            </select>
+                          </label>
+                          <label className="flex flex-col gap-1">
+                            Marker Variation
+                            <select
+                              className="rounded border border-zinc-300 px-2 py-1"
+                              disabled={!spec.typography.sentenceMarkers.enabled}
+                              value={spec.typography.sentenceMarkers.variationMode}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    sentenceMarkers: {
+                                      ...prev.typography.sentenceMarkers,
+                                      variationMode: e.target
+                                        .value as ConditionSpec["typography"]["sentenceMarkers"]["variationMode"],
+                                    },
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="shape">shape</option>
+                              <option value="color">color</option>
+                              <option value="both">both</option>
+                            </select>
+                          </label>
+                          <label className="flex flex-col gap-1">
+                            Marker Mapping
+                            <select
+                              className="rounded border border-zinc-300 px-2 py-1"
+                              disabled={!spec.typography.sentenceMarkers.enabled}
+                              value={spec.typography.sentenceMarkers.pairingMode}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    sentenceMarkers: {
+                                      ...prev.typography.sentenceMarkers,
+                                      pairingMode: e.target
+                                        .value as ConditionSpec["typography"]["sentenceMarkers"]["pairingMode"],
+                                    },
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="sentence">sentence</option>
+                              <option value="guide">guide</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="flex flex-col gap-1">
+                          Marker Size: {spec.typography.sentenceMarkers.sizeEm.toFixed(1)}em
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={0.4}
+                            max={1.8}
+                            step={0.1}
+                            disabled={!spec.typography.sentenceMarkers.enabled}
+                            value={spec.typography.sentenceMarkers.sizeEm}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  sentenceMarkers: {
+                                    ...prev.typography.sentenceMarkers,
+                                    sizeEm: Math.max(
+                                      0.4,
+                                      Number(e.target.value) || 0.4,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          Marker Gap: {spec.typography.sentenceMarkers.gapCh.toFixed(1)}ch
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={0}
+                            max={3}
+                            step={0.1}
+                            disabled={!spec.typography.sentenceMarkers.enabled}
+                            value={spec.typography.sentenceMarkers.gapCh}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  sentenceMarkers: {
+                                    ...prev.typography.sentenceMarkers,
+                                    gapCh: Math.max(
+                                      0,
+                                      Number(e.target.value) || 0,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <p className="text-xs text-zinc-500">
+                          Sentence pairs or guide pairs, with shape, color, or both.
+                        </p>
+                      </section>
                     </section>
                   </div>
                   <div className="flex justify-end">
