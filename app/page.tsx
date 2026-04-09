@@ -4,6 +4,7 @@ import {
   type CSSProperties,
   type ChangeEvent,
   type MouseEvent,
+  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
@@ -352,6 +353,91 @@ function getHighlightPositionCount(
   return Math.max(1, charCount - Math.min(clampedSize, charCount) + 1);
 }
 
+function getHighlightRanges(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+): Array<{ start: number; end: number }> {
+  if (!value) {
+    return [{ start: 0, end: 0 }];
+  }
+
+  const clampedSize = Math.max(1, size);
+
+  const buildRangesFromMatches = (
+    matches: Array<{ index: number; length: number }>,
+  ) => {
+    if (!matches.length) {
+      return [{ start: 0, end: value.length }];
+    }
+    const windowSize = Math.min(clampedSize, matches.length);
+    const ranges: Array<{ start: number; end: number }> = [];
+    for (let startIndex = 0; startIndex <= matches.length - windowSize; startIndex += 1) {
+      const first = matches[startIndex];
+      const last = matches[startIndex + windowSize - 1];
+      if (!first || !last) {
+        continue;
+      }
+      ranges.push({
+        start: first.index,
+        end: last.index + last.length,
+      });
+    }
+    return ranges.length ? ranges : [{ start: 0, end: value.length }];
+  };
+
+  if (unit === "word") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(/\S+/g)).map((match) => ({
+        index: match.index ?? 0,
+        length: match[0].length,
+      })),
+    );
+  }
+
+  if (unit === "sentence") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+        index: match.index ?? 0,
+        length: match[0].length,
+      })),
+    );
+  }
+
+  if (unit === "paragraph") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g))
+        .filter((match) => Boolean(match[0]?.trim()))
+        .map((match) => ({
+          index: match.index ?? 0,
+          length: match[0].length,
+        })),
+    );
+  }
+
+  const chars = Array.from(value);
+  if (!chars.length) {
+    return [{ start: 0, end: 0 }];
+  }
+  const charOffsets: number[] = [];
+  let runningOffset = 0;
+  chars.forEach((char) => {
+    charOffsets.push(runningOffset);
+    runningOffset += char.length;
+  });
+  const windowSize = Math.min(clampedSize, chars.length);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let startIndex = 0; startIndex <= chars.length - windowSize; startIndex += 1) {
+    const start = charOffsets[startIndex] ?? 0;
+    const end =
+      startIndex + windowSize < charOffsets.length
+        ? (charOffsets[startIndex + windowSize] ?? runningOffset)
+        : runningOffset;
+    ranges.push({ start, end });
+  }
+  return ranges.length ? ranges : [{ start: 0, end: value.length }];
+}
+
 function getHighlightSpanStyle(
   highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
 ): CSSProperties {
@@ -409,6 +495,7 @@ function AnimatedHighlightedToken({
   size,
   style,
   jumpRateHz,
+  jumpDurationMs,
   preserveWhitespace = false,
 }: {
   token: string;
@@ -416,12 +503,42 @@ function AnimatedHighlightedToken({
   size: number;
   style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
   jumpRateHz: number;
+  jumpDurationMs?: number;
   preserveWhitespace?: boolean;
 }) {
   const [jumpIndex, setJumpIndex] = useState(0);
   const positionCount = getHighlightPositionCount(token, unit, size);
 
   useEffect(() => {
+    if (positionCount <= 1) {
+      return;
+    }
+
+    if (jumpDurationMs != null && jumpDurationMs > 0) {
+      let frameId = 0;
+      let startTs: number | null = null;
+
+      const tick = (ts: number) => {
+        if (startTs == null) {
+          startTs = ts;
+        }
+        const elapsed = ts - startTs;
+        const progress = Math.min(1, elapsed / jumpDurationMs);
+        const nextIndex = Math.min(
+          positionCount - 1,
+          Math.floor(progress * positionCount),
+        );
+        setJumpIndex((prev) => (prev === nextIndex ? prev : nextIndex));
+
+        if (progress < 1) {
+          frameId = window.requestAnimationFrame(tick);
+        }
+      };
+
+      frameId = window.requestAnimationFrame(tick);
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
     if (positionCount <= 1 || jumpRateHz <= 0) {
       return;
     }
@@ -432,7 +549,7 @@ function AnimatedHighlightedToken({
     }, delayMs);
 
     return () => window.clearInterval(intervalId);
-  }, [jumpRateHz, positionCount]);
+  }, [jumpDurationMs, jumpRateHz, positionCount]);
 
   return (
     <HighlightedToken
@@ -1268,19 +1385,19 @@ function RsvpRenderer({
   token,
   viewportStep,
   jumpRateHz,
+  jumpDurationMs,
 }: {
   spec: ConditionSpec;
   token: string;
   viewportStep: ViewportStep;
   jumpRateHz: number;
+  jumpDurationMs?: number;
 }) {
   const alignment = spec.typography.alignment;
   const textAlign = alignment === "justify" ? "justify" : alignment;
   const rsvpHighlight =
     spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
-  const highlightEnabled =
-    spec.mode === "rsvp" && rsvpHighlight.enabled;
-  const jumpHighlightEnabled = highlightEnabled && rsvpHighlight.mode === "jump";
+  const highlightEnabled = spec.mode === "rsvp" && rsvpHighlight.enabled;
   const isSentenceOrParagraph =
     viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
   const useSentenceStructuredLayout =
@@ -1350,25 +1467,16 @@ function RsvpRenderer({
             ) : (
               <div className="whitespace-pre-wrap">
                 {highlightEnabled ? (
-                  jumpHighlightEnabled ? (
-                    <AnimatedHighlightedToken
-                      key={`${multilineToken}-${highlightUnit}-${highlightSize}`}
-                      token={multilineToken}
-                      unit={highlightUnit}
-                      size={highlightSize}
-                      style={highlightStyle}
-                      jumpRateHz={jumpRateHz}
-                      preserveWhitespace
-                    />
-                  ) : (
-                    <HighlightedToken
-                      token={multilineToken}
-                      unit={highlightUnit}
-                      size={highlightSize}
-                      style={highlightStyle}
-                      preserveWhitespace
-                    />
-                  )
+                  <AnimatedHighlightedToken
+                    key={`${multilineToken}-${highlightUnit}-${highlightSize}`}
+                    token={multilineToken}
+                    unit={highlightUnit}
+                    size={highlightSize}
+                    style={highlightStyle}
+                    jumpRateHz={jumpRateHz}
+                    jumpDurationMs={jumpDurationMs}
+                    preserveWhitespace
+                  />
                 ) : (
                   multilineToken
                 )}
@@ -1377,23 +1485,15 @@ function RsvpRenderer({
           ) : (
             highlightEnabled ? (
               <div className="col-span-3 text-center whitespace-pre">
-                {jumpHighlightEnabled ? (
-                  <AnimatedHighlightedToken
-                    key={`${token}-${highlightUnit}-${highlightSize}`}
-                    token={token}
-                    unit={highlightUnit}
-                    size={highlightSize}
-                    style={highlightStyle}
-                    jumpRateHz={jumpRateHz}
-                  />
-                ) : (
-                  <HighlightedToken
-                    token={token}
-                    unit={highlightUnit}
-                    size={highlightSize}
-                    style={highlightStyle}
-                  />
-                )}
+                <AnimatedHighlightedToken
+                  key={`${token}-${highlightUnit}-${highlightSize}`}
+                  token={token}
+                  unit={highlightUnit}
+                  size={highlightSize}
+                  style={highlightStyle}
+                  jumpRateHz={jumpRateHz}
+                  jumpDurationMs={jumpDurationMs}
+                />
               </div>
             ) : (
               <>
@@ -1413,32 +1513,53 @@ function RsvpRenderer({
   );
 }
 
-function getContinuousSeparator(unit: TokenizationUnit) {
-  if (unit === "char") {
+function getContinuousDisplayText({
+  rawText,
+  direction,
+  tokenizationUnit,
+}: {
+  rawText: string;
+  direction: ConditionSpec["motion"]["direction"];
+  tokenizationUnit: TokenizationUnit;
+}) {
+  if (!rawText.trim()) {
     return "";
   }
-  if (unit === "paragraph") {
-    return "\n\n";
+
+  if (direction === "horizontal") {
+    return rawText.replace(/\s+/g, " ").trim();
   }
-  return " ";
+
+  if (tokenizationUnit === "paragraph") {
+    return rawText
+      .split(/\n\s*\n+/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  return rawText.trim();
 }
 
 function ContinuousRsvpRenderer({
   spec,
-  tokens,
+  rawText,
+  resetHighlightKey,
 }: {
   spec: ConditionSpec;
-  tokens: string[];
+  rawText: string;
+  resetHighlightKey: number;
 }) {
   const direction = spec.motion.direction;
   const rsvpHighlight =
     spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
   const highlightEnabled = rsvpHighlight.enabled;
-  const jumpHighlightEnabled = highlightEnabled && rsvpHighlight.mode === "jump";
+  const highlightTiedToFlow = rsvpHighlight.tieToFlow;
   const isSentenceStructuredUnit =
     spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
   const useSentenceStructuredLayout =
     !highlightEnabled &&
+    direction === "vertical" &&
     isSentenceStructuredUnit &&
     (spec.typography.paragraphStaircase.enabled ||
       spec.typography.sentenceMarkers.enabled);
@@ -1448,9 +1569,6 @@ function ContinuousRsvpRenderer({
       : spec.typography.alignment === "justify"
       ? "justify"
       : spec.typography.alignment;
-  const separator = getContinuousSeparator(spec.tokenization.unit);
-  const preserveTokenWhitespace =
-    spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
   const effectiveJumpRateHz = clamp(
     rsvpHighlight.jumpRateHz,
     HIGHLIGHT_JUMP_RATE_MIN,
@@ -1463,10 +1581,14 @@ function ContinuousRsvpRenderer({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const tokenRefs = useRef<Array<HTMLElement | null>>([]);
-  const cycleLengthRef = useRef(2000);
+  const measureUnitRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const loopUnitRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const windowCentersRef = useRef<number[]>([]);
+  const measureStartRef = useRef(0);
+  const contentLengthRef = useRef(1);
+  const cycleLengthRef = useRef(1);
   const offsetPxRef = useRef(0);
-  const [activeJumpTokenIndex, setActiveJumpTokenIndex] = useState<number | null>(null);
+  const activeWindowStartIndexRef = useRef(0);
   const loopGapPx = Math.max(
     12,
     direction === "vertical"
@@ -1475,20 +1597,240 @@ function ContinuousRsvpRenderer({
   );
   const text = useMemo(
     () =>
-      useSentenceStructuredLayout
-        ? tokens.join(spec.tokenization.unit === "paragraph" ? "\n\n" : " ")
-        : direction === "vertical"
-        ? tokens.join("\n")
-        : tokens.join(
-            spec.tokenization.unit === "char"
-              ? ""
-              : spec.tokenization.unit === "paragraph"
-                ? "\n\n"
-                : " ",
-          ),
-    [direction, spec.tokenization.unit, tokens, useSentenceStructuredLayout],
+      getContinuousDisplayText({
+        rawText,
+        direction,
+        tokenizationUnit: spec.tokenization.unit,
+      }),
+    [direction, rawText, spec.tokenization.unit],
   );
   const displayText = text || "Enter text to begin";
+  const baseHighlightRanges = useMemo(
+    () =>
+      getHighlightRanges(displayText, rsvpHighlight.unit, 1),
+    [displayText, rsvpHighlight.unit],
+  );
+  const highlightWindowSize = useMemo(
+    () => Math.max(1, Math.floor(rsvpHighlight.size || 1)),
+    [rsvpHighlight.size],
+  );
+  const highlightPositionCount = useMemo(() => {
+    if (!baseHighlightRanges.length) {
+      return 1;
+    }
+    return Math.max(
+      1,
+      baseHighlightRanges.length - Math.min(highlightWindowSize, baseHighlightRanges.length) + 1,
+    );
+  }, [baseHighlightRanges.length, highlightWindowSize]);
+
+  const highlightStyle = useMemo(
+    () => getHighlightSpanStyle(rsvpHighlight.style),
+    [rsvpHighlight.style],
+  );
+
+  const applyHighlightStyleToNode = useCallback(
+    (node: HTMLSpanElement | null, active: boolean) => {
+      if (!node) {
+        return;
+      }
+      node.style.fontWeight = "";
+      node.style.backgroundColor = "";
+      node.style.boxShadow = "";
+      node.style.borderRadius = "";
+      node.style.paddingInline = "";
+
+      if (!active || !highlightEnabled) {
+        return;
+      }
+
+      if (highlightStyle.fontWeight != null) {
+        node.style.fontWeight = String(highlightStyle.fontWeight);
+      }
+      if (highlightStyle.backgroundColor != null) {
+        node.style.backgroundColor = String(highlightStyle.backgroundColor);
+      }
+      if (highlightStyle.boxShadow != null) {
+        node.style.boxShadow = String(highlightStyle.boxShadow);
+      }
+      if (highlightStyle.borderRadius != null) {
+        node.style.borderRadius = String(highlightStyle.borderRadius);
+      }
+      if (highlightStyle.paddingInline != null) {
+        node.style.paddingInline = String(highlightStyle.paddingInline);
+      }
+    },
+    [highlightEnabled, highlightStyle],
+  );
+
+  const applyHighlightWindow = useCallback(
+    (startIndex: number) => {
+      const totalUnits = baseHighlightRanges.length;
+      if (!highlightEnabled || totalUnits === 0) {
+        measureUnitRefs.current.forEach((node) =>
+          applyHighlightStyleToNode(node, false),
+        );
+        loopUnitRefs.current.forEach((node) =>
+          applyHighlightStyleToNode(node, false),
+        );
+        activeWindowStartIndexRef.current = 0;
+        return;
+      }
+
+      const effectiveWindowSize = Math.min(highlightWindowSize, totalUnits);
+      const maxStart = Math.max(0, totalUnits - effectiveWindowSize);
+      const nextStart = clamp(startIndex, 0, maxStart);
+      const previousStart = activeWindowStartIndexRef.current;
+      const previousEnd = previousStart + effectiveWindowSize - 1;
+      const nextEnd = nextStart + effectiveWindowSize - 1;
+      const rangeStart = Math.max(0, Math.min(previousStart, nextStart));
+      const rangeEnd = Math.min(
+        totalUnits - 1,
+        Math.max(previousEnd, nextEnd),
+      );
+
+      for (let index = rangeStart; index <= rangeEnd; index += 1) {
+        const isActive = index >= nextStart && index <= nextEnd;
+        applyHighlightStyleToNode(measureUnitRefs.current[index] ?? null, isActive);
+        applyHighlightStyleToNode(loopUnitRefs.current[index] ?? null, isActive);
+      }
+
+      activeWindowStartIndexRef.current = nextStart;
+    },
+    [
+      applyHighlightStyleToNode,
+      baseHighlightRanges.length,
+      highlightEnabled,
+      highlightWindowSize,
+    ],
+  );
+
+  const measureContinuousLayout = useCallback(() => {
+    const measureNode = measureRef.current;
+    if (!measureNode) {
+      windowCentersRef.current = [];
+      return;
+    }
+
+    measureStartRef.current =
+      direction === "horizontal" ? measureNode.offsetLeft : measureNode.offsetTop;
+    contentLengthRef.current = Math.max(
+      1,
+      direction === "horizontal" ? measureNode.scrollWidth : measureNode.scrollHeight,
+    );
+    cycleLengthRef.current = Math.max(1, contentLengthRef.current + loopGapPx);
+
+    const metrics =
+      direction === "vertical"
+        ? baseHighlightRanges.map((range) => {
+            const totalChars = Math.max(1, displayText.length);
+            const startRatio = range.start / totalChars;
+            const endRatio = range.end / totalChars;
+            return {
+              start: startRatio * contentLengthRef.current,
+              end: Math.max(
+                startRatio * contentLengthRef.current + 1,
+                endRatio * contentLengthRef.current,
+              ),
+            };
+          })
+        : measureUnitRefs.current
+            .map((node) => {
+              if (!node) {
+                return null;
+              }
+              const start = node.offsetLeft;
+              const size = node.offsetWidth;
+              return {
+                start,
+                end: start + Math.max(1, size),
+              };
+            })
+            .filter(
+              (entry): entry is { start: number; end: number } => entry != null,
+            );
+
+    if (!metrics.length) {
+      windowCentersRef.current = [];
+      return;
+    }
+
+    const effectiveWindowSize = Math.min(highlightWindowSize, metrics.length);
+    const nextCenters: number[] = [];
+    for (let startIndex = 0; startIndex <= metrics.length - effectiveWindowSize; startIndex += 1) {
+      const startMetric = metrics[startIndex];
+      const endMetric = metrics[startIndex + effectiveWindowSize - 1];
+      if (!startMetric || !endMetric) {
+        continue;
+      }
+      nextCenters.push((startMetric.start + endMetric.end) / 2);
+    }
+    windowCentersRef.current = nextCenters.length ? nextCenters : [metrics[0]?.start ?? 0];
+  }, [baseHighlightRanges, direction, displayText.length, highlightWindowSize, loopGapPx]);
+
+  const findNearestWindowIndex = useCallback((target: number) => {
+    const centers = windowCentersRef.current;
+    if (!centers.length) {
+      return 0;
+    }
+
+    let low = 0;
+    let high = centers.length - 1;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const value = centers[mid] ?? 0;
+      if (value < target) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+
+    const candidates = [low - 1, low, low + 1].filter(
+      (index) => index >= 0 && index < centers.length,
+    );
+    let bestIndex = low;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    candidates.forEach((index) => {
+      const distance = Math.abs((centers[index] ?? 0) - target);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    return bestIndex;
+  }, []);
+
+  const syncActiveWindow = useCallback(() => {
+    if (!highlightEnabled || highlightPositionCount <= 1) {
+      applyHighlightWindow(0);
+      return;
+    }
+
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      applyHighlightWindow(0);
+      return;
+    }
+
+    const focusPoint =
+      direction === "horizontal"
+        ? viewport.clientWidth / 2
+        : viewport.clientHeight / 2;
+    const contentLength = Math.max(1, contentLengthRef.current);
+    const relativeFocus =
+      ((offsetPxRef.current + focusPoint - measureStartRef.current) % contentLength +
+        contentLength) %
+      contentLength;
+    const nextIndex = findNearestWindowIndex(relativeFocus);
+    applyHighlightWindow(nextIndex);
+  }, [
+    applyHighlightWindow,
+    direction,
+    findNearestWindowIndex,
+    highlightEnabled,
+    highlightPositionCount,
+  ]);
 
   const applyTrackTransform = useCallback(() => {
     const track = trackRef.current;
@@ -1517,6 +1859,9 @@ function ContinuousRsvpRenderer({
       const cycle = Math.max(1, cycleLengthRef.current);
       offsetPxRef.current = (offsetPxRef.current + pxPerSecondRef.current * dt) % cycle;
       applyTrackTransform();
+      if (highlightEnabled && highlightTiedToFlow) {
+        syncActiveWindow();
+      }
       rafRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -1528,40 +1873,50 @@ function ContinuousRsvpRenderer({
       rafRef.current = null;
       lastTsRef.current = null;
     };
-  }, [applyTrackTransform, spec.mode, spec.motion.autoplay]);
+  }, [
+    applyTrackTransform,
+    highlightEnabled,
+    highlightTiedToFlow,
+    spec.mode,
+    spec.motion.autoplay,
+    syncActiveWindow,
+  ]);
 
   useEffect(() => {
-    const node = measureRef.current;
-    if (!node) {
-      return;
-    }
-
-    const updateCycleLength = () => {
-      const nextCycle =
-        direction === "horizontal"
-          ? node.scrollWidth + loopGapPx
-          : node.scrollHeight + loopGapPx;
-      cycleLengthRef.current = Math.max(1, nextCycle);
-      offsetPxRef.current %= cycleLengthRef.current;
+    const updateLayout = () => {
+      measureContinuousLayout();
+      offsetPxRef.current %= Math.max(1, cycleLengthRef.current);
       applyTrackTransform();
+      syncActiveWindow();
     };
 
-    updateCycleLength();
-    const resizeObserver = new ResizeObserver(updateCycleLength);
-    resizeObserver.observe(node);
-    if (node.parentElement) {
-      resizeObserver.observe(node.parentElement);
+    updateLayout();
+    const measureNode = measureRef.current;
+    if (!measureNode) {
+      return;
     }
-    window.addEventListener("resize", updateCycleLength);
+    const resizeObserver = new ResizeObserver(updateLayout);
+    resizeObserver.observe(measureNode);
+    if (measureNode.parentElement) {
+      resizeObserver.observe(measureNode.parentElement);
+    }
+    measureUnitRefs.current.forEach((node) => {
+      if (node) {
+        resizeObserver.observe(node);
+      }
+    });
+    window.addEventListener("resize", updateLayout);
     return () => {
       resizeObserver.disconnect();
-      window.removeEventListener("resize", updateCycleLength);
+      window.removeEventListener("resize", updateLayout);
     };
   }, [
     applyTrackTransform,
     direction,
     displayText,
+    highlightWindowSize,
     loopGapPx,
+    measureContinuousLayout,
     spec.motion.wrapVerticalText,
     spec.typography.alignment,
     spec.typography.fontFamily,
@@ -1569,6 +1924,7 @@ function ContinuousRsvpRenderer({
     spec.typography.letterSpacingPx,
     spec.typography.lineHeight,
     spec.typography.wordSpacingPx,
+    syncActiveWindow,
   ]);
 
   useEffect(() => {
@@ -1576,65 +1932,24 @@ function ContinuousRsvpRenderer({
   }, [applyTrackTransform]);
 
   useEffect(() => {
-    if (!jumpHighlightEnabled || tokens.length === 0 || !viewportRef.current) {
+    if (!highlightEnabled || highlightTiedToFlow || highlightPositionCount <= 1) {
       return;
     }
 
-    let frameId = 0;
+    const delayMs = Math.max(50, Math.round(1000 / effectiveJumpRateHz));
+    const intervalId = window.setInterval(() => {
+      applyHighlightWindow(
+        (activeWindowStartIndexRef.current + 1) % highlightPositionCount,
+      );
+    }, delayMs);
 
-    const updateJumpFocus = () => {
-      const viewport = viewportRef.current;
-      if (!viewport) {
-        return;
-      }
-
-      const viewportRect = viewport.getBoundingClientRect();
-      const focusPoint =
-        direction === "horizontal"
-          ? viewportRect.left + viewportRect.width / 2
-          : viewportRect.top + viewportRect.height / 2;
-
-      let bestIndex: number | null = null;
-      let bestDistance = Number.POSITIVE_INFINITY;
-
-      tokenRefs.current.forEach((node, index) => {
-        if (!node) {
-          return;
-        }
-        const rect = node.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) {
-          return;
-        }
-
-        const tokenCenter =
-          direction === "horizontal"
-            ? rect.left + rect.width / 2
-            : rect.top + rect.height / 2;
-        const distance = Math.abs(tokenCenter - focusPoint);
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = index;
-        }
-      });
-
-      if (bestIndex == null) {
-        setActiveJumpTokenIndex(null);
-        frameId = window.requestAnimationFrame(updateJumpFocus);
-        return;
-      }
-      setActiveJumpTokenIndex((prev) => (prev === bestIndex ? prev : bestIndex));
-      frameId = window.requestAnimationFrame(updateJumpFocus);
-    };
-
-    frameId = window.requestAnimationFrame(updateJumpFocus);
-    return () => window.cancelAnimationFrame(frameId);
+    return () => window.clearInterval(intervalId);
   }, [
-    direction,
-    jumpHighlightEnabled,
-    rsvpHighlight.size,
-    rsvpHighlight.unit,
-    tokens,
+    applyHighlightWindow,
+    effectiveJumpRateHz,
+    highlightEnabled,
+    highlightPositionCount,
+    highlightTiedToFlow,
   ]);
 
   const contentClassName = useMemo(() => {
@@ -1666,6 +1981,85 @@ function ContinuousRsvpRenderer({
     ],
   );
 
+  useEffect(() => {
+    measureUnitRefs.current = [];
+    loopUnitRefs.current = [];
+  }, [direction, displayText, highlightWindowSize, rsvpHighlight.unit]);
+
+  useEffect(() => {
+    if (spec.mode !== "continuous" || !highlightEnabled) {
+      const frameId = window.requestAnimationFrame(() => {
+        applyHighlightWindow(0);
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      measureContinuousLayout();
+      syncActiveWindow();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    applyHighlightWindow,
+    direction,
+    displayText,
+    highlightEnabled,
+    highlightWindowSize,
+    measureContinuousLayout,
+    rsvpHighlight.size,
+    rsvpHighlight.unit,
+    syncActiveWindow,
+    spec.mode,
+  ]);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      measureContinuousLayout();
+      syncActiveWindow();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [measureContinuousLayout, resetHighlightKey, syncActiveWindow]);
+
+  const renderUnitizedText = useCallback((kind: "measure" | "loop") => {
+    const fragments: ReactNode[] = [];
+    let previousEnd = 0;
+    baseHighlightRanges.forEach((range, index) => {
+      const gap = displayText.slice(previousEnd, range.start);
+      if (gap) {
+        fragments.push(
+          <span key={`gap-${index}-${previousEnd}`}>
+            {gap}
+          </span>,
+        );
+      }
+      const segment = displayText.slice(range.start, range.end);
+      fragments.push(
+        <span
+          key={`unit-${index}-${range.start}`}
+          ref={(node) => {
+            if (kind === "measure") {
+              measureUnitRefs.current[index] = node;
+            } else {
+              loopUnitRefs.current[index] = node;
+            }
+          }}
+        >
+          {segment}
+        </span>,
+      );
+      previousEnd = range.end;
+    });
+    const trailing = displayText.slice(previousEnd);
+    if (trailing) {
+      fragments.push(
+        <span key={`gap-trailing-${previousEnd}`}>
+          {trailing}
+        </span>,
+      );
+    }
+    return fragments.length ? fragments : displayText;
+  }, [baseHighlightRanges, displayText]);
+
   const contentChildren = useMemo(() => {
     if (useSentenceStructuredLayout) {
       return (
@@ -1682,77 +2076,27 @@ function ContinuousRsvpRenderer({
       );
     }
 
-    return tokens.map((token, index) => {
-      const showTokenHighlight =
-        highlightEnabled &&
-        (!jumpHighlightEnabled || index === activeJumpTokenIndex);
-      const tokenContent = showTokenHighlight ? (
-        jumpHighlightEnabled ? (
-          <AnimatedHighlightedToken
-            key={`jump-${token}-${index}-${rsvpHighlight.unit}-${rsvpHighlight.size}-${effectiveJumpRateHz}`}
-            token={token}
-            unit={rsvpHighlight.unit}
-            size={rsvpHighlight.size}
-            style={rsvpHighlight.style}
-            jumpRateHz={effectiveJumpRateHz}
-            preserveWhitespace={preserveTokenWhitespace}
-          />
-        ) : (
-          <HighlightedToken
-            token={token}
-            unit={rsvpHighlight.unit}
-            size={rsvpHighlight.size}
-            style={rsvpHighlight.style}
-            preserveWhitespace={preserveTokenWhitespace}
-          />
-        )
-      ) : (
-        token
-      );
+    const streamClassName =
+      direction === "horizontal"
+        ? "inline-block whitespace-nowrap"
+        : spec.motion.wrapVerticalText
+          ? "block w-full whitespace-pre-wrap break-words"
+          : "block w-full whitespace-pre";
 
-      if (direction === "vertical") {
-        return (
-          <div
-            key={`${token}-${index}`}
-            ref={(node) => {
-              tokenRefs.current[index] = node;
-            }}
-            className={
-              spec.motion.wrapVerticalText
-                ? "w-full whitespace-pre-wrap break-words"
-                : "w-full whitespace-pre"
-            }
-          >
-            {tokenContent}
-          </div>
-        );
-      }
+    if (!highlightEnabled) {
+      return <span className={streamClassName}>{displayText}</span>;
+    }
 
-      return (
-        <span
-          key={`${token}-${index}`}
-          ref={(node) => {
-            tokenRefs.current[index] = node;
-          }}
-          className="inline-block"
-        >
-          {index > 0 && separator ? <span>{separator}</span> : null}
-          {tokenContent}
-        </span>
-      );
-    });
+    return (
+      <span className={streamClassName}>
+        {renderUnitizedText("loop")}
+      </span>
+    );
   }, [
     displayText,
     direction,
-    effectiveJumpRateHz,
     highlightEnabled,
-    jumpHighlightEnabled,
-    activeJumpTokenIndex,
-    preserveTokenWhitespace,
-    rsvpHighlight.size,
-    rsvpHighlight.style,
-    rsvpHighlight.unit,
-    separator,
+    renderUnitizedText,
     spec.motion.wrapVerticalText,
     spec.typography.fontSizePx,
     spec.typography.lineWidthPx,
@@ -1761,17 +2105,33 @@ function ContinuousRsvpRenderer({
     spec.typography.paragraphStaircase.indentStepCh,
     spec.typography.paragraphStaircase.maxWidthCh,
     spec.typography.sentenceMarkers,
-    tokens,
     useSentenceStructuredLayout,
   ]);
 
-  const renderContinuousContent = (measurementRef?: RefObject<HTMLDivElement | null>) => (
+  const renderContinuousContent = (
+    measurementRef?: RefObject<HTMLDivElement | null>,
+    registerRefs = false,
+  ) => (
     <div
       ref={measurementRef}
-      className={contentClassName}
+      className={`${contentClassName} relative`}
       style={contentStyle}
     >
-      {contentChildren}
+      {registerRefs && highlightEnabled && !useSentenceStructuredLayout ? (
+        <span
+          className={
+            direction === "horizontal"
+              ? "inline-block whitespace-nowrap"
+              : spec.motion.wrapVerticalText
+                ? "block w-full whitespace-pre-wrap break-words"
+                : "block w-full whitespace-pre"
+          }
+        >
+          {renderUnitizedText("measure")}
+        </span>
+      ) : (
+        contentChildren
+      )}
     </div>
   );
 
@@ -1798,7 +2158,7 @@ function ContinuousRsvpRenderer({
               gap: loopGapPx,
             }}
           >
-            {renderContinuousContent(measureRef)}
+            {renderContinuousContent(measureRef, true)}
             <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
@@ -1811,7 +2171,7 @@ function ContinuousRsvpRenderer({
               gap: loopGapPx,
             }}
           >
-            {renderContinuousContent(measureRef)}
+            {renderContinuousContent(measureRef, true)}
             <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
@@ -1824,8 +2184,10 @@ function Viewport({
   spec,
   viewportStep,
   rsvpToken,
-  continuousTokens,
+  continuousText,
   highlightJumpRateHz,
+  rsvpHighlightJumpDurationMs,
+  resetContinuousHighlightKey,
   manualAdvanceEnabled,
   onManualAdvance,
   onViewportMouseMove,
@@ -1834,8 +2196,10 @@ function Viewport({
   spec: ConditionSpec;
   viewportStep: ViewportStep;
   rsvpToken: string;
-  continuousTokens: string[];
+  continuousText: string;
   highlightJumpRateHz: number;
+  rsvpHighlightJumpDurationMs?: number;
+  resetContinuousHighlightKey: number;
   manualAdvanceEnabled: boolean;
   onManualAdvance: () => void;
   onViewportMouseMove: (event: MouseEvent<HTMLDivElement>) => void;
@@ -1854,7 +2218,8 @@ function Viewport({
       {spec.mode === "continuous" ? (
         <ContinuousRsvpRenderer
           spec={spec}
-          tokens={continuousTokens}
+          rawText={continuousText}
+          resetHighlightKey={resetContinuousHighlightKey}
         />
       ) : (
         <RsvpRenderer
@@ -1862,6 +2227,7 @@ function Viewport({
           token={rsvpToken}
           viewportStep={viewportStep}
           jumpRateHz={highlightJumpRateHz}
+          jumpDurationMs={rsvpHighlightJumpDurationMs}
         />
       )}
     </div>
@@ -1892,6 +2258,7 @@ export default function Home() {
   const [settingsName, setSettingsName] = useState("condition-spec");
   const [settingsModalError, setSettingsModalError] = useState("");
   const [text, setText] = useState("");
+  const [resetContinuousHighlightKey, setResetContinuousHighlightKey] = useState(0);
   const logsRef = useRef<LogEntry[]>([]);
   const rsvpIndexRef = useRef(0);
   const baseSpeedBeforeMouseRef = useRef<number | null>(null);
@@ -1964,15 +2331,6 @@ export default function Home() {
     () => tokenizeText(text, spec.tokenization.unit, rsvpChunkSize),
     [rsvpChunkSize, spec.tokenization.unit, text],
   );
-  const continuousTokens = useMemo(
-    () =>
-      tokenizeText(
-        text,
-        spec.tokenization.unit,
-        Math.max(1, spec.tokenization.chunkSize),
-      ),
-    [text, spec.tokenization.chunkSize, spec.tokenization.unit],
-  );
   const viewportTokenCount = useMemo(
     () => getViewportTokenCount(viewportStep),
     [viewportStep],
@@ -1989,6 +2347,46 @@ export default function Home() {
     viewportTokenCount,
     spec.tokenization.unit,
   );
+  const currentRsvpAdvanceCharCount = useMemo(
+    () =>
+      getAdvanceCharacterCount(
+        rsvpTokens,
+        safeRsvpIndex,
+        effectiveAdvanceStep,
+        spec.tokenization.unit,
+      ),
+    [
+      effectiveAdvanceStep,
+      rsvpTokens,
+      safeRsvpIndex,
+      spec.tokenization.unit,
+    ],
+  );
+  const currentRsvpTokenDurationMs = useMemo(() => {
+    if (spec.mode !== "rsvp" || !spec.motion.autoplay || !currentRsvpToken) {
+      return undefined;
+    }
+
+    const speedValue = Math.max(1, spec.motion.speed.value);
+    const msPerToken = Math.max(
+      20,
+      Math.round((currentRsvpAdvanceCharCount * 1000) / speedValue),
+    );
+    const extraDelay =
+      spec.motion.pauseAtPunctuation.enabled &&
+      endsWithPausePunctuation(currentRsvpToken)
+        ? Math.max(0, spec.motion.pauseAtPunctuation.delayMs)
+        : 0;
+    return msPerToken + extraDelay;
+  }, [
+    currentRsvpAdvanceCharCount,
+    currentRsvpToken,
+    spec.mode,
+    spec.motion.autoplay,
+    spec.motion.pauseAtPunctuation.delayMs,
+    spec.motion.pauseAtPunctuation.enabled,
+    spec.motion.speed.value,
+  ]);
   const effectiveHighlightJumpRateHz = clamp(
     rsvpHighlight.jumpRateHz,
     HIGHLIGHT_JUMP_RATE_MIN,
@@ -2490,17 +2888,17 @@ export default function Home() {
             parsed.typography?.rsvpHighlight?.style === "outline"
               ? parsed.typography.rsvpHighlight.style
               : conditionSpec.typography.rsvpHighlight.style,
-          mode:
-            parsed.typography?.rsvpHighlight?.mode === "jump" ||
-            parsed.typography?.rsvpHighlight?.mode === "static"
-              ? parsed.typography.rsvpHighlight.mode
-              : conditionSpec.typography.rsvpHighlight.mode,
+          mode: "jump",
           jumpRateHz: clamp(
             Number(parsed.typography?.rsvpHighlight?.jumpRateHz) ||
               conditionSpec.typography.rsvpHighlight.jumpRateHz,
             HIGHLIGHT_JUMP_RATE_MIN,
             HIGHLIGHT_JUMP_RATE_MAX,
           ),
+          tieToFlow:
+            typeof parsed.typography?.rsvpHighlight?.tieToFlow === "boolean"
+              ? parsed.typography.rsvpHighlight.tieToFlow
+              : conditionSpec.typography.rsvpHighlight.tieToFlow,
         },
       },
       motion: {
@@ -2775,8 +3173,10 @@ export default function Home() {
                     spec={spec}
                     viewportStep={viewportStep}
                     rsvpToken={currentRsvpToken}
-                    continuousTokens={continuousTokens}
+                    continuousText={text}
                     highlightJumpRateHz={effectiveHighlightJumpRateHz}
+                    resetContinuousHighlightKey={resetContinuousHighlightKey}
+                    rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
                     manualAdvanceEnabled={canManualAdvance}
                     onManualAdvance={() => advanceRsvp("manual")}
                     onViewportMouseMove={handleViewportMouseMove}
@@ -3439,33 +3839,6 @@ export default function Home() {
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="flex flex-col gap-1">
-                            Highlight Mode
-                            <select
-                              className="rounded border border-zinc-300 px-2 py-1"
-                              disabled={!rsvpHighlight.enabled}
-                              value={rsvpHighlight.mode}
-                              onChange={(e) =>
-                                setSpec((prev) => ({
-                                  ...prev,
-                                  typography: {
-                                    ...prev.typography,
-                                    rsvpHighlight: {
-                                      ...(
-                                        prev.typography.rsvpHighlight ??
-                                        conditionSpec.typography.rsvpHighlight
-                                      ),
-                                      mode: e.target
-                                        .value as ConditionSpec["typography"]["rsvpHighlight"]["mode"],
-                                    },
-                                  },
-                                }))
-                              }
-                            >
-                              <option value="static">static</option>
-                              <option value="jump">jump</option>
-                            </select>
-                          </label>
-                          <label className="flex flex-col gap-1">
                             Highlight Style
                             <select
                               className="rounded border border-zinc-300 px-2 py-1"
@@ -3494,40 +3867,83 @@ export default function Home() {
                             </select>
                           </label>
                         </div>
-                        <label className="flex flex-col gap-1">
-                          Highlight Jump Rate: {effectiveHighlightJumpRateHz.toFixed(2)} steps/sec
-                          <input
-                            className="w-full"
-                            type="range"
-                            min={HIGHLIGHT_JUMP_RATE_MIN}
-                            max={HIGHLIGHT_JUMP_RATE_MAX}
-                            step={0.25}
-                            disabled={
-                              !rsvpHighlight.enabled || rsvpHighlight.mode !== "jump"
-                            }
-                            value={effectiveHighlightJumpRateHz}
-                            onChange={(e) =>
-                              setSpec((prev) => ({
-                                ...prev,
-                                typography: {
-                                  ...prev.typography,
-                                  rsvpHighlight: {
-                                    ...(
-                                      prev.typography.rsvpHighlight ??
-                                      conditionSpec.typography.rsvpHighlight
-                                    ),
-                                    jumpRateHz: clamp(
-                                      Number(e.target.value) ||
-                                        conditionSpec.typography.rsvpHighlight.jumpRateHz,
-                                      HIGHLIGHT_JUMP_RATE_MIN,
-                                      HIGHLIGHT_JUMP_RATE_MAX,
-                                    ),
+                        {spec.mode === "continuous" ? (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                disabled={!rsvpHighlight.enabled}
+                                checked={rsvpHighlight.tieToFlow}
+                                onChange={(e) =>
+                                  setSpec((prev) => ({
+                                    ...prev,
+                                    typography: {
+                                      ...prev.typography,
+                                      rsvpHighlight: {
+                                        ...(
+                                          prev.typography.rsvpHighlight ??
+                                          conditionSpec.typography.rsvpHighlight
+                                        ),
+                                        tieToFlow: e.target.checked,
+                                      },
+                                    },
+                                  }))
+                                }
+                              />
+                              <span>Lock Highlight To Flow</span>
+                            </label>
+                            <button
+                              type="button"
+                              className="rounded border border-zinc-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                              disabled={!rsvpHighlight.enabled}
+                              onClick={() =>
+                                setResetContinuousHighlightKey((prev) => prev + 1)
+                              }
+                            >
+                              Reset Highlight Position
+                            </button>
+                          </div>
+                        ) : null}
+                        {spec.mode !== "continuous" || !rsvpHighlight.tieToFlow ? (
+                          <label className="flex flex-col gap-1">
+                            Highlight Jump Rate: {effectiveHighlightJumpRateHz.toFixed(2)} steps/sec
+                            <input
+                              className="w-full"
+                              type="range"
+                              min={HIGHLIGHT_JUMP_RATE_MIN}
+                              max={HIGHLIGHT_JUMP_RATE_MAX}
+                              step={0.25}
+                              disabled={!rsvpHighlight.enabled}
+                              value={effectiveHighlightJumpRateHz}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    rsvpHighlight: {
+                                      ...(
+                                        prev.typography.rsvpHighlight ??
+                                        conditionSpec.typography.rsvpHighlight
+                                      ),
+                                      jumpRateHz: clamp(
+                                        Number(e.target.value) ||
+                                          conditionSpec.typography.rsvpHighlight.jumpRateHz,
+                                        HIGHLIGHT_JUMP_RATE_MIN,
+                                        HIGHLIGHT_JUMP_RATE_MAX,
+                                      ),
+                                    },
                                   },
-                                },
-                              }))
-                            }
-                          />
-                        </label>
+                                }))
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {spec.mode === "continuous" ? (
+                          <p className="text-xs text-zinc-500">
+                            With flow lock on, jump highlight speed is derived from the moving text.
+                            Turn it off to run highlight independently and use Reset Highlight to resync.
+                          </p>
+                        ) : null}
                         <label className="flex flex-col gap-1">
                           Highlight Size: {VIEWPORT_STEP_LABELS[highlightStep]}
                           <input

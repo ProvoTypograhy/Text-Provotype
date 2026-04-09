@@ -32,8 +32,9 @@ export type ConditionSpec = {
       unit: "char" | "word" | "sentence" | "paragraph";
       size: number;
       style: "bold" | "background" | "outline";
-      mode: "static" | "jump";
+      mode: "jump";
       jumpRateHz: number;
+      tieToFlow: boolean;
     };
     variableAxes?: Record<string, number>;
   };
@@ -89,8 +90,9 @@ export const conditionSpec: ConditionSpec = {
       unit: "char",
       size: 1,
       style: "background",
-      mode: "static",
+      mode: "jump",
       jumpRateHz: 4,
+      tieToFlow: true,
     },
     variableAxes: { wght: 450, wdth: 100, opsz: 36 },
   },
