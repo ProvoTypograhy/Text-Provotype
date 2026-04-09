@@ -1,58 +1,129 @@
-# Textual Provotype
+# Provotypographer
 
-Textual Provotype is a Next.js prototype for exploring RSVP and continuous text presentation patterns for reading research.
+Provotypographer is a research-oriented text reading interface built with Next.js. It is designed to explore RSVP and continuous text presentation patterns, compare pacing and segmentation strategies, and export reproducible reading conditions as JSON.
 
-## Getting Started
+## Overview
 
-You need `Node.js` and `npm` installed locally.
+The app presents a reading viewport beside a settings panel. You can paste or edit source text, switch between RSVP and continuous modes, tune playback and typography, resize the viewport, and save the current condition as JSON for reuse.
 
-1. Run `npm install`
-2. Run `npm run dev`
-3. Open the local URL printed by Next.js in your browser
+Default text is loaded from [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt).
 
 ## Features
 
-- Two reading modes: `rsvp` and `continuous`
-- Viewport step slider with `L`, `W`, `S`, and `P` variants
-- RSVP playback with autoplay, pause/play, reset, and manual advance
-- Manual RSVP advance by clicking the viewport or pressing `Space`
-- Advance step control in RSVP mode
-- Continuous playback with horizontal and vertical motion
-- Adjustable playback speed in characters per second
-- Optional punctuation pause delay for RSVP playback
-- Optional Mouse Y rate control with reset-on-leave behavior
-- Editable source text inside the app
-- Default startup text loaded from [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt)
-- Resizable inner viewport width and height
-- Crop-style viewport resizing that hides text without reflowing the layout
+### Reading Modes
+
+- `rsvp` mode for centered token-by-token presentation
+- `continuous` mode for looping horizontal or vertical text movement
+- Shared viewport step ladder across both modes: `1-3 letters`, `1-3 words`, `1-3 sentences`, `1-3 paragraphs`
+- Tokenization support for characters, words, sentences, and paragraphs
+
+### RSVP Controls
+
+- Autoplay toggle with play, pause, and reset controls
+- Manual advance when autoplay is off by clicking the viewport or pressing `Space`
+- Adjustable advance step capped by the current viewport step
+- Speed control in characters per second
+- Optional punctuation pause with configurable delay
+- Center-character RSVP rendering for short units
+- Structured sentence and paragraph rendering for larger units
+- Optional RSVP highlight overlay with `bold`, `background`, or `outline` styles
+- Highlight size tied to the same step ladder as the viewport
+
+### Continuous Controls
+
+- Autoplay loop for continuous reading
+- Horizontal and vertical movement
+- Adjustable speed in characters per second
+- Optional vertical text wrapping
+- Looping marquee-style rendering with continuous offset animation
+- Sentence- and paragraph-aware rendering for structured text
+
+### Viewport And Layout
+
+- Resizable reading viewport using sliders or drag handles
+- Separate width and height controls for the inner viewport
+- Crop-style viewport resizing that hides text without reflowing the outer layout
 - Resizable settings sidebar
-- Typography controls for font size, line height, alignment, line width, and viewport padding
-- Full-width or capped text measure inside the viewport
+- Show or hide the settings panel
+
+### Typography And Presentation
+
+- Adjustable font size and line height
+- Alignment options: `left`, `center`, `right`, `justify`
+- Toggle between full-width text measure and capped line width
+- Adjustable viewport padding
 - Support for variable font axes through the condition spec
+- Letter spacing and word spacing support in the rendering layer
+
+### Structured Reading Experiments
+
 - Sentence staircase layout with configurable indent in `ch`
-- Staircase supports `by sentence` and `by line` modes
-- Optional staircase max width can make the right edge step too
-- Sentence staircase works in sentence and paragraph views
-- Sentence staircase works in both RSVP and continuous rendering when sentence structure is shown
-- Guide marker system with `sentence` and `line` modes plus configurable position, size, and gap
-- Guide markers can be used on their own or together with staircase layout, with `line` mode using the line-based staircase renderer
-- Sentence and paragraph structured rendering in continuous mode, including multiline horizontal movement
-- Paragraph-aware rendering that preserves paragraph breaks
-- Settings JSON modal for viewing the active condition spec
-- Settings JSON download
-- Settings JSON copy to clipboard
-- Settings JSON import from file
-- Reset to default condition spec
-- UI state persisted in exported settings JSON for viewport step, advance step, and viewport size
+- Staircase modes for `by sentence` and `by line`
+- Optional max line width for stepped right edges
+- Guide marker system for sentence or line boundaries
+- Marker position controls for `start`, `end`, or `both`
+- Marker variation by `shape`, `color`, or `both`
+- Configurable marker size and gap
+- Structured sentence and paragraph rendering works in RSVP and continuous presentations where applicable
 
-## Tech
+### Input And Condition Management
 
-- Next.js 16
+- Editable source text directly in the UI
+- Condition spec modal for inspecting the active JSON
+- Download current settings as JSON
+- Copy current settings JSON to the clipboard
+- Import settings JSON from a file
+- Reset back to the default condition spec
+- Exported settings include UI state such as viewport step, advance step, and viewport dimensions
+- Import flow normalizes older or partial JSON inputs against the current spec
+
+## Tech Stack
+
+- Next.js 16 with the App Router
 - React 19
-- TypeScript
+- TypeScript 5 in `strict` mode
 - Tailwind CSS 4
+- ESLint 9 with `eslint-config-next`
+
+## Project Structure
+
+- [app/page.tsx](/Users/dylanb/Documents/Github/text-interface/app/page.tsx) contains the full reader UI, rendering logic, and settings controls
+- [lib/condition-spec.ts](/Users/dylanb/Documents/Github/text-interface/lib/condition-spec.ts) defines the `ConditionSpec` schema and default state
+- [app/globals.css](/Users/dylanb/Documents/Github/text-interface/app/globals.css) contains the global theme and base styles
+- [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt) provides the startup text loaded into the editor
+
+## Getting Started
+
+### Requirements
+
+- Node.js
+- npm
+
+### Development
+
+```bash
+npm install
+npm run dev
+```
+
+Then open the local URL printed by Next.js.
+
+### Production
+
+```bash
+npm install
+npm run build
+npm run start
+```
+
+## Available Scripts
+
+- `npm run dev` starts the local development server
+- `npm run build` creates a production build
+- `npm run start` runs the production server
+- `npm run lint` runs ESLint
 
 ## Notes
 
-- Default text can be changed by editing [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt).
-- The app is intended as a research prototype
+- This project is a prototype intended for reading research and interface experiments.
+- If you want different startup content, edit [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt).

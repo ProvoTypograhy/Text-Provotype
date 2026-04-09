@@ -53,6 +53,8 @@ const VIEWPORT_SIZE_MIN_PERCENT = 1;
 const VIEWPORT_SIZE_MAX_PERCENT = 100;
 const SPEED_MIN_CPS = 1;
 const SPEED_MAX_CPS = 80;
+const HIGHLIGHT_JUMP_RATE_MIN = 0.25;
+const HIGHLIGHT_JUMP_RATE_MAX = 80;
 const DEFAULT_TEXT_PATH = "/default-text.txt";
 const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
 const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
@@ -186,11 +188,39 @@ function getHighlightSegments(
   value: string,
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
   size: number,
+  jumpIndex?: number,
 ): {
   before: string;
   highlight: string;
   after: string;
 } {
+  const normalizeSegments = ({
+    before,
+    highlight,
+    after,
+  }: {
+    before: string;
+    highlight: string;
+    after: string;
+  }) => {
+    const highlightChars = Array.from(highlight);
+    let start = 0;
+    let end = highlightChars.length;
+
+    while (start < end && /\s/u.test(highlightChars[start] ?? "")) {
+      start += 1;
+    }
+    while (end > start && /\s/u.test(highlightChars[end - 1] ?? "")) {
+      end -= 1;
+    }
+
+    return {
+      before: before + highlightChars.slice(0, start).join(""),
+      highlight: highlightChars.slice(start, end).join(""),
+      after: highlightChars.slice(end).join("") + after,
+    };
+  };
+
   if (!value) {
     return { before: "", highlight: "", after: "" };
   }
@@ -201,21 +231,22 @@ function getHighlightSegments(
       return { before: value, highlight: "", after: "" };
     }
     const clampedSize = Math.max(1, Math.min(size, wordMatches.length));
-    const startWordIndex = Math.max(
-      0,
-      Math.floor((wordMatches.length - clampedSize) / 2),
-    );
+    const maxStartWordIndex = Math.max(0, wordMatches.length - clampedSize);
+    const startWordIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((wordMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartWordIndex);
     const endWordIndex = startWordIndex + clampedSize - 1;
     const startMatch = wordMatches[startWordIndex];
     const endMatch = wordMatches[endWordIndex];
     const startIndex = startMatch?.index ?? 0;
     const endIndex =
       (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
-    return {
+    return normalizeSegments({
       before: value.slice(0, startIndex),
       highlight: value.slice(startIndex, endIndex),
       after: value.slice(endIndex),
-    };
+    });
   }
 
   if (unit === "sentence") {
@@ -224,20 +255,21 @@ function getHighlightSegments(
       return { before: value, highlight: "", after: "" };
     }
     const clampedSize = Math.max(1, Math.min(size, sentenceMatches.length));
-    const startSentenceIndex = Math.max(
-      0,
-      Math.floor((sentenceMatches.length - clampedSize) / 2),
-    );
+    const maxStartSentenceIndex = Math.max(0, sentenceMatches.length - clampedSize);
+    const startSentenceIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((sentenceMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartSentenceIndex);
     const endSentenceIndex = startSentenceIndex + clampedSize - 1;
     const startMatch = sentenceMatches[startSentenceIndex];
     const endMatch = sentenceMatches[endSentenceIndex];
     const startIndex = startMatch?.index ?? 0;
     const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
-    return {
+    return normalizeSegments({
       before: value.slice(0, startIndex),
       highlight: value.slice(startIndex, endIndex),
       after: value.slice(endIndex),
-    };
+    });
   }
 
   if (unit === "paragraph") {
@@ -248,30 +280,76 @@ function getHighlightSegments(
       return { before: value, highlight: "", after: "" };
     }
     const clampedSize = Math.max(1, Math.min(size, paragraphMatches.length));
-    const startParagraphIndex = Math.max(
+    const maxStartParagraphIndex = Math.max(
       0,
-      Math.floor((paragraphMatches.length - clampedSize) / 2),
+      paragraphMatches.length - clampedSize,
     );
+    const startParagraphIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((paragraphMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartParagraphIndex);
     const endParagraphIndex = startParagraphIndex + clampedSize - 1;
     const startMatch = paragraphMatches[startParagraphIndex];
     const endMatch = paragraphMatches[endParagraphIndex];
     const startIndex = startMatch?.index ?? 0;
     const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
-    return {
+    return normalizeSegments({
       before: value.slice(0, startIndex),
       highlight: value.slice(startIndex, endIndex),
       after: value.slice(endIndex),
-    };
+    });
   }
 
   const chars = Array.from(value);
   const clampedSize = Math.max(1, Math.min(size, chars.length));
-  const startIndex = Math.max(0, Math.floor((chars.length - clampedSize) / 2));
-  return {
+  const maxStartIndex = Math.max(0, chars.length - clampedSize);
+  const startIndex =
+    jumpIndex == null
+      ? Math.max(0, Math.floor((chars.length - clampedSize) / 2))
+      : clamp(jumpIndex, 0, maxStartIndex);
+  return normalizeSegments({
     before: chars.slice(0, startIndex).join(""),
     highlight: chars.slice(startIndex, startIndex + clampedSize).join(""),
     after: chars.slice(startIndex + clampedSize).join(""),
-  };
+  });
+}
+
+function getHighlightPositionCount(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+): number {
+  if (!value) {
+    return 1;
+  }
+
+  const clampedSize = Math.max(1, size);
+
+  if (unit === "word") {
+    const wordCount = Array.from(value.matchAll(/\S+/g)).length;
+    return Math.max(1, wordCount - Math.min(clampedSize, wordCount) + 1);
+  }
+
+  if (unit === "sentence") {
+    const sentenceCount = Array.from(value.matchAll(SENTENCE_REGEX)).length;
+    return Math.max(
+      1,
+      sentenceCount - Math.min(clampedSize, sentenceCount) + 1,
+    );
+  }
+
+  if (unit === "paragraph") {
+    const paragraphCount = Array.from(
+      value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g),
+    ).filter((match) => Boolean(match[0]?.trim())).length;
+    return Math.max(
+      1,
+      paragraphCount - Math.min(clampedSize, paragraphCount) + 1,
+    );
+  }
+
+  const charCount = Array.from(value).length;
+  return Math.max(1, charCount - Math.min(clampedSize, charCount) + 1);
 }
 
 function getHighlightSpanStyle(
@@ -300,14 +378,21 @@ function HighlightedToken({
   size,
   style,
   preserveWhitespace = false,
+  jumpIndex,
 }: {
   token: string;
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
   size: number;
   style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
   preserveWhitespace?: boolean;
+  jumpIndex?: number;
 }) {
-  const { before, highlight, after } = getHighlightSegments(token, unit, size);
+  const { before, highlight, after } = getHighlightSegments(
+    token,
+    unit,
+    size,
+    jumpIndex,
+  );
   const highlightStyle = getHighlightSpanStyle(style);
   return (
     <span className={preserveWhitespace ? "whitespace-pre-wrap" : undefined}>
@@ -315,6 +400,49 @@ function HighlightedToken({
       {highlight ? <span style={highlightStyle}>{highlight}</span> : null}
       <span>{after}</span>
     </span>
+  );
+}
+
+function AnimatedHighlightedToken({
+  token,
+  unit,
+  size,
+  style,
+  jumpRateHz,
+  preserveWhitespace = false,
+}: {
+  token: string;
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
+  size: number;
+  style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
+  jumpRateHz: number;
+  preserveWhitespace?: boolean;
+}) {
+  const [jumpIndex, setJumpIndex] = useState(0);
+  const positionCount = getHighlightPositionCount(token, unit, size);
+
+  useEffect(() => {
+    if (positionCount <= 1 || jumpRateHz <= 0) {
+      return;
+    }
+
+    const delayMs = Math.max(50, Math.round(1000 / jumpRateHz));
+    const intervalId = window.setInterval(() => {
+      setJumpIndex((prev) => Math.min(prev + 1, positionCount - 1));
+    }, delayMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [jumpRateHz, positionCount]);
+
+  return (
+    <HighlightedToken
+      token={token}
+      unit={unit}
+      size={size}
+      style={style}
+      preserveWhitespace={preserveWhitespace}
+      jumpIndex={jumpIndex}
+    />
   );
 }
 
@@ -1139,10 +1267,12 @@ function RsvpRenderer({
   spec,
   token,
   viewportStep,
+  jumpRateHz,
 }: {
   spec: ConditionSpec;
   token: string;
   viewportStep: ViewportStep;
+  jumpRateHz: number;
 }) {
   const alignment = spec.typography.alignment;
   const textAlign = alignment === "justify" ? "justify" : alignment;
@@ -1150,6 +1280,7 @@ function RsvpRenderer({
     spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
   const highlightEnabled =
     spec.mode === "rsvp" && rsvpHighlight.enabled;
+  const jumpHighlightEnabled = highlightEnabled && rsvpHighlight.mode === "jump";
   const isSentenceOrParagraph =
     viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
   const useSentenceStructuredLayout =
@@ -1219,13 +1350,25 @@ function RsvpRenderer({
             ) : (
               <div className="whitespace-pre-wrap">
                 {highlightEnabled ? (
-                  <HighlightedToken
-                    token={multilineToken}
-                    unit={highlightUnit}
-                    size={highlightSize}
-                    style={highlightStyle}
-                    preserveWhitespace
-                  />
+                  jumpHighlightEnabled ? (
+                    <AnimatedHighlightedToken
+                      key={`${multilineToken}-${highlightUnit}-${highlightSize}`}
+                      token={multilineToken}
+                      unit={highlightUnit}
+                      size={highlightSize}
+                      style={highlightStyle}
+                      jumpRateHz={jumpRateHz}
+                      preserveWhitespace
+                    />
+                  ) : (
+                    <HighlightedToken
+                      token={multilineToken}
+                      unit={highlightUnit}
+                      size={highlightSize}
+                      style={highlightStyle}
+                      preserveWhitespace
+                    />
+                  )
                 ) : (
                   multilineToken
                 )}
@@ -1234,12 +1377,23 @@ function RsvpRenderer({
           ) : (
             highlightEnabled ? (
               <div className="col-span-3 text-center whitespace-pre">
-                <HighlightedToken
-                  token={token}
-                  unit={highlightUnit}
-                  size={highlightSize}
-                  style={highlightStyle}
-                />
+                {jumpHighlightEnabled ? (
+                  <AnimatedHighlightedToken
+                    key={`${token}-${highlightUnit}-${highlightSize}`}
+                    token={token}
+                    unit={highlightUnit}
+                    size={highlightSize}
+                    style={highlightStyle}
+                    jumpRateHz={jumpRateHz}
+                  />
+                ) : (
+                  <HighlightedToken
+                    token={token}
+                    unit={highlightUnit}
+                    size={highlightSize}
+                    style={highlightStyle}
+                  />
+                )}
               </div>
             ) : (
               <>
@@ -1259,6 +1413,16 @@ function RsvpRenderer({
   );
 }
 
+function getContinuousSeparator(unit: TokenizationUnit) {
+  if (unit === "char") {
+    return "";
+  }
+  if (unit === "paragraph") {
+    return "\n\n";
+  }
+  return " ";
+}
+
 function ContinuousRsvpRenderer({
   spec,
   tokens,
@@ -1266,11 +1430,15 @@ function ContinuousRsvpRenderer({
   spec: ConditionSpec;
   tokens: string[];
 }) {
-  const [offsetPx, setOffsetPx] = useState(0);
   const direction = spec.motion.direction;
+  const rsvpHighlight =
+    spec.typography.rsvpHighlight ?? conditionSpec.typography.rsvpHighlight;
+  const highlightEnabled = rsvpHighlight.enabled;
+  const jumpHighlightEnabled = highlightEnabled && rsvpHighlight.mode === "jump";
   const isSentenceStructuredUnit =
     spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
   const useSentenceStructuredLayout =
+    !highlightEnabled &&
     isSentenceStructuredUnit &&
     (spec.typography.paragraphStaircase.enabled ||
       spec.typography.sentenceMarkers.enabled);
@@ -1280,12 +1448,25 @@ function ContinuousRsvpRenderer({
       : spec.typography.alignment === "justify"
       ? "justify"
       : spec.typography.alignment;
+  const separator = getContinuousSeparator(spec.tokenization.unit);
+  const preserveTokenWhitespace =
+    spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
+  const effectiveJumpRateHz = clamp(
+    rsvpHighlight.jumpRateHz,
+    HIGHLIGHT_JUMP_RATE_MIN,
+    HIGHLIGHT_JUMP_RATE_MAX,
+  );
   const pxPerSecond = speedToPxPerSecond(spec);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
   const pxPerSecondRef = useRef(pxPerSecond);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const tokenRefs = useRef<Array<HTMLElement | null>>([]);
   const cycleLengthRef = useRef(2000);
+  const offsetPxRef = useRef(0);
+  const [activeJumpTokenIndex, setActiveJumpTokenIndex] = useState<number | null>(null);
   const loopGapPx = Math.max(
     12,
     direction === "vertical"
@@ -1309,6 +1490,17 @@ function ContinuousRsvpRenderer({
   );
   const displayText = text || "Enter text to begin";
 
+  const applyTrackTransform = useCallback(() => {
+    const track = trackRef.current;
+    if (!track) {
+      return;
+    }
+    track.style.transform =
+      direction === "horizontal"
+        ? `translateX(${-offsetPxRef.current}px)`
+        : `translateY(${-offsetPxRef.current}px)`;
+  }, [direction]);
+
   useEffect(() => {
     pxPerSecondRef.current = pxPerSecond;
   }, [pxPerSecond]);
@@ -1322,10 +1514,9 @@ function ContinuousRsvpRenderer({
       const lastTs = lastTsRef.current;
       const dt = lastTs == null ? 0 : (ts - lastTs) / 1000;
       lastTsRef.current = ts;
-      setOffsetPx((prev) => {
-        const cycle = Math.max(1, cycleLengthRef.current);
-        return (prev + pxPerSecondRef.current * dt) % cycle;
-      });
+      const cycle = Math.max(1, cycleLengthRef.current);
+      offsetPxRef.current = (offsetPxRef.current + pxPerSecondRef.current * dt) % cycle;
+      applyTrackTransform();
       rafRef.current = window.requestAnimationFrame(tick);
     };
 
@@ -1337,7 +1528,7 @@ function ContinuousRsvpRenderer({
       rafRef.current = null;
       lastTsRef.current = null;
     };
-  }, [spec.mode, spec.motion.autoplay]);
+  }, [applyTrackTransform, spec.mode, spec.motion.autoplay]);
 
   useEffect(() => {
     const node = measureRef.current;
@@ -1351,7 +1542,8 @@ function ContinuousRsvpRenderer({
           ? node.scrollWidth + loopGapPx
           : node.scrollHeight + loopGapPx;
       cycleLengthRef.current = Math.max(1, nextCycle);
-      setOffsetPx((prev) => prev % cycleLengthRef.current);
+      offsetPxRef.current %= cycleLengthRef.current;
+      applyTrackTransform();
     };
 
     updateCycleLength();
@@ -1366,6 +1558,7 @@ function ContinuousRsvpRenderer({
       window.removeEventListener("resize", updateCycleLength);
     };
   }, [
+    applyTrackTransform,
     direction,
     displayText,
     loopGapPx,
@@ -1378,30 +1571,104 @@ function ContinuousRsvpRenderer({
     spec.typography.wordSpacingPx,
   ]);
 
-  const renderContinuousContent = (
-    measurementRef?: RefObject<HTMLDivElement | null>,
-  ) => (
-    <div
-      ref={measurementRef}
-      className={
-        useSentenceStructuredLayout
-          ? "text-left"
-          : direction === "horizontal"
-            ? "whitespace-nowrap"
-            : spec.motion.wrapVerticalText
-              ? "whitespace-pre-wrap break-words text-left"
-              : "whitespace-pre text-center"
+  useEffect(() => {
+    applyTrackTransform();
+  }, [applyTrackTransform]);
+
+  useEffect(() => {
+    if (!jumpHighlightEnabled || tokens.length === 0 || !viewportRef.current) {
+      return;
+    }
+
+    let frameId = 0;
+
+    const updateJumpFocus = () => {
+      const viewport = viewportRef.current;
+      if (!viewport) {
+        return;
       }
-      style={{
-        fontFamily: spec.typography.fontFamily,
-        fontSize: spec.typography.fontSizePx,
-        lineHeight: spec.typography.lineHeight,
-        letterSpacing: spec.typography.letterSpacingPx,
-        wordSpacing: spec.typography.wordSpacingPx,
-        textAlign,
-      }}
-    >
-      {useSentenceStructuredLayout ? (
+
+      const viewportRect = viewport.getBoundingClientRect();
+      const focusPoint =
+        direction === "horizontal"
+          ? viewportRect.left + viewportRect.width / 2
+          : viewportRect.top + viewportRect.height / 2;
+
+      let bestIndex: number | null = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      tokenRefs.current.forEach((node, index) => {
+        if (!node) {
+          return;
+        }
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          return;
+        }
+
+        const tokenCenter =
+          direction === "horizontal"
+            ? rect.left + rect.width / 2
+            : rect.top + rect.height / 2;
+        const distance = Math.abs(tokenCenter - focusPoint);
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+
+      if (bestIndex == null) {
+        setActiveJumpTokenIndex(null);
+        frameId = window.requestAnimationFrame(updateJumpFocus);
+        return;
+      }
+      setActiveJumpTokenIndex((prev) => (prev === bestIndex ? prev : bestIndex));
+      frameId = window.requestAnimationFrame(updateJumpFocus);
+    };
+
+    frameId = window.requestAnimationFrame(updateJumpFocus);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    direction,
+    jumpHighlightEnabled,
+    rsvpHighlight.size,
+    rsvpHighlight.unit,
+    tokens,
+  ]);
+
+  const contentClassName = useMemo(() => {
+    if (useSentenceStructuredLayout) {
+      return "text-left";
+    }
+    if (direction === "horizontal") {
+      return "whitespace-nowrap";
+    }
+    return "flex w-full flex-col";
+  }, [direction, useSentenceStructuredLayout]);
+
+  const contentStyle = useMemo<CSSProperties>(
+    () => ({
+      fontFamily: spec.typography.fontFamily,
+      fontSize: spec.typography.fontSizePx,
+      lineHeight: spec.typography.lineHeight,
+      letterSpacing: spec.typography.letterSpacingPx,
+      wordSpacing: spec.typography.wordSpacingPx,
+      textAlign,
+    }),
+    [
+      spec.typography.fontFamily,
+      spec.typography.fontSizePx,
+      spec.typography.lineHeight,
+      spec.typography.letterSpacingPx,
+      spec.typography.wordSpacingPx,
+      textAlign,
+    ],
+  );
+
+  const contentChildren = useMemo(() => {
+    if (useSentenceStructuredLayout) {
+      return (
         <SentenceStructuredRenderer
           token={displayText}
           staircaseEnabled={spec.typography.paragraphStaircase.enabled}
@@ -1412,14 +1679,107 @@ function ContinuousRsvpRenderer({
           lineWidthPx={spec.typography.lineWidthPx}
           sentenceMarkers={spec.typography.sentenceMarkers}
         />
+      );
+    }
+
+    return tokens.map((token, index) => {
+      const showTokenHighlight =
+        highlightEnabled &&
+        (!jumpHighlightEnabled || index === activeJumpTokenIndex);
+      const tokenContent = showTokenHighlight ? (
+        jumpHighlightEnabled ? (
+          <AnimatedHighlightedToken
+            key={`jump-${token}-${index}-${rsvpHighlight.unit}-${rsvpHighlight.size}-${effectiveJumpRateHz}`}
+            token={token}
+            unit={rsvpHighlight.unit}
+            size={rsvpHighlight.size}
+            style={rsvpHighlight.style}
+            jumpRateHz={effectiveJumpRateHz}
+            preserveWhitespace={preserveTokenWhitespace}
+          />
+        ) : (
+          <HighlightedToken
+            token={token}
+            unit={rsvpHighlight.unit}
+            size={rsvpHighlight.size}
+            style={rsvpHighlight.style}
+            preserveWhitespace={preserveTokenWhitespace}
+          />
+        )
       ) : (
-        displayText
-      )}
+        token
+      );
+
+      if (direction === "vertical") {
+        return (
+          <div
+            key={`${token}-${index}`}
+            ref={(node) => {
+              tokenRefs.current[index] = node;
+            }}
+            className={
+              spec.motion.wrapVerticalText
+                ? "w-full whitespace-pre-wrap break-words"
+                : "w-full whitespace-pre"
+            }
+          >
+            {tokenContent}
+          </div>
+        );
+      }
+
+      return (
+        <span
+          key={`${token}-${index}`}
+          ref={(node) => {
+            tokenRefs.current[index] = node;
+          }}
+          className="inline-block"
+        >
+          {index > 0 && separator ? <span>{separator}</span> : null}
+          {tokenContent}
+        </span>
+      );
+    });
+  }, [
+    displayText,
+    direction,
+    effectiveJumpRateHz,
+    highlightEnabled,
+    jumpHighlightEnabled,
+    activeJumpTokenIndex,
+    preserveTokenWhitespace,
+    rsvpHighlight.size,
+    rsvpHighlight.style,
+    rsvpHighlight.unit,
+    separator,
+    spec.motion.wrapVerticalText,
+    spec.typography.fontSizePx,
+    spec.typography.lineWidthPx,
+    spec.typography.paragraphStaircase.enabled,
+    spec.typography.paragraphStaircase.indentMode,
+    spec.typography.paragraphStaircase.indentStepCh,
+    spec.typography.paragraphStaircase.maxWidthCh,
+    spec.typography.sentenceMarkers,
+    tokens,
+    useSentenceStructuredLayout,
+  ]);
+
+  const renderContinuousContent = (measurementRef?: RefObject<HTMLDivElement | null>) => (
+    <div
+      ref={measurementRef}
+      className={contentClassName}
+      style={contentStyle}
+    >
+      {contentChildren}
     </div>
   );
 
   return (
-    <div className="relative h-full w-full overflow-hidden">
+    <div
+      ref={viewportRef}
+      className="relative h-full w-full overflow-hidden"
+    >
       <div
         className="absolute left-0 top-0 h-full w-full opacity-15"
         style={{
@@ -1432,10 +1792,10 @@ function ContinuousRsvpRenderer({
       {direction === "horizontal" ? (
         <div className="absolute inset-y-0 left-0 flex items-center overflow-hidden">
           <div
+            ref={trackRef}
             className="flex items-center px-8"
             style={{
               gap: loopGapPx,
-              transform: `translateX(${-offsetPx}px)`,
             }}
           >
             {renderContinuousContent(measureRef)}
@@ -1445,10 +1805,10 @@ function ContinuousRsvpRenderer({
       ) : (
         <div className="absolute inset-x-0 top-0 overflow-hidden px-8">
           <div
+            ref={trackRef}
             className="flex flex-col"
             style={{
               gap: loopGapPx,
-              transform: `translateY(${-offsetPx}px)`,
             }}
           >
             {renderContinuousContent(measureRef)}
@@ -1465,6 +1825,7 @@ function Viewport({
   viewportStep,
   rsvpToken,
   continuousTokens,
+  highlightJumpRateHz,
   manualAdvanceEnabled,
   onManualAdvance,
   onViewportMouseMove,
@@ -1474,6 +1835,7 @@ function Viewport({
   viewportStep: ViewportStep;
   rsvpToken: string;
   continuousTokens: string[];
+  highlightJumpRateHz: number;
   manualAdvanceEnabled: boolean;
   onManualAdvance: () => void;
   onViewportMouseMove: (event: MouseEvent<HTMLDivElement>) => void;
@@ -1499,6 +1861,7 @@ function Viewport({
           spec={spec}
           token={rsvpToken}
           viewportStep={viewportStep}
+          jumpRateHz={highlightJumpRateHz}
         />
       )}
     </div>
@@ -1625,6 +1988,11 @@ export default function Home() {
     safeRsvpIndex,
     viewportTokenCount,
     spec.tokenization.unit,
+  );
+  const effectiveHighlightJumpRateHz = clamp(
+    rsvpHighlight.jumpRateHz,
+    HIGHLIGHT_JUMP_RATE_MIN,
+    HIGHLIGHT_JUMP_RATE_MAX,
   );
   const settingsPayload = useMemo<SettingsJson>(
     () => ({
@@ -1760,6 +2128,26 @@ export default function Home() {
       },
     }));
   }, [spec.mode, viewportStep]);
+
+  useEffect(() => {
+    if (
+      spec.mode !== "continuous" ||
+      spec.motion.direction !== "horizontal" ||
+      viewportStep === "paragraph-3"
+    ) {
+      return;
+    }
+
+    setViewportStep("paragraph-3");
+    setSpec((prev) => ({
+      ...prev,
+      tokenization: {
+        ...prev.tokenization,
+        unit: "paragraph",
+        chunkSize: 3,
+      },
+    }));
+  }, [spec.mode, spec.motion.direction, viewportStep]);
 
   const advanceRsvp = useCallback(
     (event: "tick" | "manual") => {
@@ -2102,6 +2490,17 @@ export default function Home() {
             parsed.typography?.rsvpHighlight?.style === "outline"
               ? parsed.typography.rsvpHighlight.style
               : conditionSpec.typography.rsvpHighlight.style,
+          mode:
+            parsed.typography?.rsvpHighlight?.mode === "jump" ||
+            parsed.typography?.rsvpHighlight?.mode === "static"
+              ? parsed.typography.rsvpHighlight.mode
+              : conditionSpec.typography.rsvpHighlight.mode,
+          jumpRateHz: clamp(
+            Number(parsed.typography?.rsvpHighlight?.jumpRateHz) ||
+              conditionSpec.typography.rsvpHighlight.jumpRateHz,
+            HIGHLIGHT_JUMP_RATE_MIN,
+            HIGHLIGHT_JUMP_RATE_MAX,
+          ),
         },
       },
       motion: {
@@ -2377,6 +2776,7 @@ export default function Home() {
                     viewportStep={viewportStep}
                     rsvpToken={currentRsvpToken}
                     continuousTokens={continuousTokens}
+                    highlightJumpRateHz={effectiveHighlightJumpRateHz}
                     manualAdvanceEnabled={canManualAdvance}
                     onManualAdvance={() => advanceRsvp("manual")}
                     onViewportMouseMove={handleViewportMouseMove}
@@ -2487,6 +2887,10 @@ export default function Home() {
                         max={getViewportStepsForMode(spec.mode).length - 1}
                         step={1}
                         list="viewport-step-ticks"
+                        disabled={
+                          spec.mode === "continuous" &&
+                          spec.motion.direction === "horizontal"
+                        }
                         value={getStepIndex(viewportStep, spec.mode)}
                         onChange={(e) =>
                           applyViewportStep(
@@ -2521,6 +2925,12 @@ export default function Home() {
                         </span>
                       ))}
                     </div>
+                    {spec.mode === "continuous" &&
+                    spec.motion.direction === "horizontal" ? (
+                      <span className="text-xs text-zinc-500">
+                        Horizontal continuous is locked to `3 P`.
+                      </span>
+                    ) : null}
                   </div>
 
                   <label className="flex flex-col gap-1 text-sm">
@@ -3029,6 +3439,33 @@ export default function Home() {
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="flex flex-col gap-1">
+                            Highlight Mode
+                            <select
+                              className="rounded border border-zinc-300 px-2 py-1"
+                              disabled={!rsvpHighlight.enabled}
+                              value={rsvpHighlight.mode}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    rsvpHighlight: {
+                                      ...(
+                                        prev.typography.rsvpHighlight ??
+                                        conditionSpec.typography.rsvpHighlight
+                                      ),
+                                      mode: e.target
+                                        .value as ConditionSpec["typography"]["rsvpHighlight"]["mode"],
+                                    },
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="static">static</option>
+                              <option value="jump">jump</option>
+                            </select>
+                          </label>
+                          <label className="flex flex-col gap-1">
                             Highlight Style
                             <select
                               className="rounded border border-zinc-300 px-2 py-1"
@@ -3057,6 +3494,40 @@ export default function Home() {
                             </select>
                           </label>
                         </div>
+                        <label className="flex flex-col gap-1">
+                          Highlight Jump Rate: {effectiveHighlightJumpRateHz.toFixed(2)} steps/sec
+                          <input
+                            className="w-full"
+                            type="range"
+                            min={HIGHLIGHT_JUMP_RATE_MIN}
+                            max={HIGHLIGHT_JUMP_RATE_MAX}
+                            step={0.25}
+                            disabled={
+                              !rsvpHighlight.enabled || rsvpHighlight.mode !== "jump"
+                            }
+                            value={effectiveHighlightJumpRateHz}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  rsvpHighlight: {
+                                    ...(
+                                      prev.typography.rsvpHighlight ??
+                                      conditionSpec.typography.rsvpHighlight
+                                    ),
+                                    jumpRateHz: clamp(
+                                      Number(e.target.value) ||
+                                        conditionSpec.typography.rsvpHighlight.jumpRateHz,
+                                      HIGHLIGHT_JUMP_RATE_MIN,
+                                      HIGHLIGHT_JUMP_RATE_MAX,
+                                    ),
+                                  },
+                                },
+                              }))
+                            }
+                          />
+                        </label>
                         <label className="flex flex-col gap-1">
                           Highlight Size: {VIEWPORT_STEP_LABELS[highlightStep]}
                           <input

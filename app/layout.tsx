@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Textual Provotype",
+  title: "Provotypographer",
   description: "Research text reading interface at the University of Victoria.",
 };
 
