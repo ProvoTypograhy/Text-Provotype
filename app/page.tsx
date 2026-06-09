@@ -56,7 +56,8 @@ const SPEED_MIN_CPS = 1;
 const SPEED_MAX_CPS = 80;
 const HIGHLIGHT_JUMP_RATE_MIN = 0.25;
 const HIGHLIGHT_JUMP_RATE_MAX = 80;
-const DEFAULT_TEXT_PATH = "/default-text.txt";
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const DEFAULT_TEXT_PATH = `${BASE_PATH}/default-text.txt`;
 const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
 const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
   "letter-1": "1 L",
