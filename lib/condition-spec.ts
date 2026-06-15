@@ -5,6 +5,8 @@ export type ConditionSpec = {
   tokenization: { unit: "char" | "word" | "chunk" | "sentence" | "paragraph"; chunkSize: number };
   typography: {
     fontFamily: string;
+    fontColor: string;
+    backgroundColor: string;
     fontSizePx: number;
     lineHeight: number;
     useViewportWidth: boolean;
@@ -63,6 +65,8 @@ export const conditionSpec: ConditionSpec = {
   tokenization: { unit: "word", chunkSize: 1 },
   typography: {
     fontFamily: "Geist",
+    fontColor: "#171717",
+    backgroundColor: "#ffffff",
     fontSizePx: 20,
     lineHeight: 1.4,
     useViewportWidth: true,

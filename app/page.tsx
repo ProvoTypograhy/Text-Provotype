@@ -24,6 +24,18 @@ type LogEntry = {
 
 type TokenizationUnit = ConditionSpec["tokenization"]["unit"];
 type ReaderMode = ConditionSpec["mode"];
+type HighlightRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+type ContinuousHighlightLayout = {
+  container: HTMLElement;
+  entries: Array<{ node: Text; start: number; end: number }>;
+  ranges: Array<{ start: number; end: number }>;
+  contentLength: number;
+};
 type SettingsJson = ConditionSpec & {
   ui?: {
     viewportStep?: ViewportStep;
@@ -31,6 +43,11 @@ type SettingsJson = ConditionSpec & {
     viewportWidthPercent?: number;
     viewportHeightPercent?: number;
   };
+};
+type SharePayloadV1 = {
+  version: 1;
+  settings: SettingsJson;
+  text?: string;
 };
 const RSVP_STEPS = [
   "letter-1",
@@ -56,6 +73,36 @@ const SPEED_MIN_CPS = 1;
 const SPEED_MAX_CPS = 80;
 const HIGHLIGHT_JUMP_RATE_MIN = 0.25;
 const HIGHLIGHT_JUMP_RATE_MAX = 80;
+const SHARE_HASH_PREFIX = "share=";
+const SHARE_URL_MAX_LENGTH = 7000;
+const FONT_FAMILY_OPTIONS = [
+  {
+    label: "Geist",
+    value: "Geist",
+  },
+  {
+    label: "System Sans",
+    value:
+      '"Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
+  {
+    label: "Serif",
+    value: 'Georgia, "Times New Roman", Times, serif',
+  },
+  {
+    label: "Monospace",
+    value:
+      '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+  },
+  {
+    label: "Arial",
+    value: "Arial, Helvetica, sans-serif",
+  },
+  {
+    label: "Verdana",
+    value: "Verdana, Geneva, sans-serif",
+  },
+] as const;
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 const DEFAULT_TEXT_PATH = `${BASE_PATH}/default-text.txt`;
 const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
@@ -137,6 +184,113 @@ function sanitizeSettingsName(value: string): string {
     .replace(/[^a-z0-9-_]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+function normalizeFontFamily(value: unknown): string {
+  if (typeof value !== "string") {
+    return conditionSpec.typography.fontFamily;
+  }
+  const trimmed = value.trim();
+  return trimmed || conditionSpec.typography.fontFamily;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function gzipString(value: string): Promise<Uint8Array | null> {
+  if (typeof CompressionStream === "undefined") {
+    return null;
+  }
+  const stream = new Blob([value])
+    .stream()
+    .pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function gunzipString(bytes: Uint8Array): Promise<string> {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("Compressed share links are not supported in this browser.");
+  }
+  const buffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const stream = new Blob([buffer])
+    .stream()
+    .pipeThrough(new DecompressionStream("gzip"));
+  return await new Response(stream).text();
+}
+
+function buildShareUrlFromEncodedPayload(encodedPayload: string): string {
+  const url = new URL(window.location.href);
+  url.hash = `${SHARE_HASH_PREFIX}${encodedPayload}`;
+  return url.toString();
+}
+
+async function encodeSharePayload(payload: SharePayloadV1): Promise<string> {
+  const json = JSON.stringify(payload);
+  const plainPayload = `v1.j.${bytesToBase64Url(new TextEncoder().encode(json))}`;
+  const gzipped = await gzipString(json);
+  if (!gzipped) {
+    return plainPayload;
+  }
+  const gzipPayload = `v1.g.${bytesToBase64Url(gzipped)}`;
+  return gzipPayload.length < plainPayload.length ? gzipPayload : plainPayload;
+}
+
+async function decodeSharePayload(encodedPayload: string): Promise<SharePayloadV1> {
+  const [version, encoding, body] = encodedPayload.split(".");
+  if (version !== "v1" || !body) {
+    throw new Error("Unsupported share link format.");
+  }
+
+  const raw =
+    encoding === "j"
+      ? new TextDecoder().decode(base64UrlToBytes(body))
+      : encoding === "g"
+        ? await gunzipString(base64UrlToBytes(body))
+        : null;
+  if (!raw) {
+    throw new Error("Unsupported share link encoding.");
+  }
+
+  const payload = JSON.parse(raw) as SharePayloadV1;
+  if (
+    !payload ||
+    payload.version !== 1 ||
+    !payload.settings ||
+    typeof payload.settings !== "object"
+  ) {
+    throw new Error("Invalid share link payload.");
+  }
+  return payload;
 }
 
 function getRsvpDisplayToken(
@@ -459,6 +613,228 @@ function getHighlightSpanStyle(
   };
 }
 
+function getHighlightOverlayStyle(
+  highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
+): CSSProperties {
+  if (highlightStyle === "bold") {
+    return {
+      backgroundColor: "rgba(250, 204, 21, 0.22)",
+      borderRadius: "0.12em",
+      outline: "1px solid rgba(24, 24, 27, 0.18)",
+    };
+  }
+  if (highlightStyle === "outline") {
+    return {
+      borderRadius: "0.12em",
+      boxShadow: "inset 0 0 0 2px currentColor",
+    };
+  }
+  return {
+    backgroundColor: "rgba(250, 204, 21, 0.45)",
+    borderRadius: "0.12em",
+  };
+}
+
+function isInsideAriaHidden(node: Node): boolean {
+  let current: Node | null = node.parentNode;
+  while (current) {
+    if (
+      current instanceof HTMLElement &&
+      current.getAttribute("aria-hidden") === "true"
+    ) {
+      return true;
+    }
+    current = current.parentNode;
+  }
+  return false;
+}
+
+function collectReadableTextNodes(root: HTMLElement) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const entries: Array<{
+    node: Text;
+    start: number;
+    end: number;
+  }> = [];
+  let text = "";
+  let current = walker.nextNode();
+
+  while (current) {
+    if (current instanceof Text && !isInsideAriaHidden(current)) {
+      const value = current.nodeValue ?? "";
+      if (value.length > 0) {
+        const start = text.length;
+        text += value;
+        entries.push({
+          node: current,
+          start,
+          end: start + value.length,
+        });
+      }
+    }
+    current = walker.nextNode();
+  }
+
+  return { text, entries };
+}
+
+function findTextPosition(
+  entries: Array<{ node: Text; start: number; end: number }>,
+  offset: number,
+) {
+  if (!entries.length) {
+    return null;
+  }
+
+  const clampedOffset = clamp(offset, 0, entries[entries.length - 1]?.end ?? 0);
+  const exactEndEntry = entries.find(
+    (entry) => clampedOffset === entry.end && entry.end > entry.start,
+  );
+  if (exactEndEntry) {
+    return {
+      node: exactEndEntry.node,
+      offset: exactEndEntry.end - exactEndEntry.start,
+    };
+  }
+
+  const entry = entries.find(
+    (candidate) =>
+      clampedOffset >= candidate.start && clampedOffset < candidate.end,
+  );
+  if (!entry) {
+    const fallback = entries[entries.length - 1];
+    return fallback
+      ? {
+          node: fallback.node,
+          offset: fallback.end - fallback.start,
+        }
+      : null;
+  }
+
+  return {
+    node: entry.node,
+    offset: clampedOffset - entry.start,
+  };
+}
+
+function getTextRangeRects({
+  container,
+  entries,
+  start,
+  end,
+}: {
+  container: HTMLElement;
+  entries: Array<{ node: Text; start: number; end: number }>;
+  start: number;
+  end: number;
+}): HighlightRect[] {
+  const rangeStart = findTextPosition(entries, start);
+  const rangeEnd = findTextPosition(entries, end);
+  if (!rangeStart || !rangeEnd) {
+    return [];
+  }
+
+  const range = document.createRange();
+  const containerRect = container.getBoundingClientRect();
+  range.setStart(rangeStart.node, rangeStart.offset);
+  range.setEnd(rangeEnd.node, rangeEnd.offset);
+  const rects = Array.from(range.getClientRects())
+    .map((rect) => ({
+      left: rect.left - containerRect.left,
+      top: rect.top - containerRect.top,
+      width: rect.width,
+      height: rect.height,
+    }))
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  range.detach();
+  return rects;
+}
+
+function buildContinuousHighlightLayout({
+  container,
+  direction,
+  unit,
+  size,
+}: {
+  container: HTMLElement;
+  direction: ConditionSpec["motion"]["direction"];
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
+  size: number;
+}): ContinuousHighlightLayout | null {
+  const { text, entries } = collectReadableTextNodes(container);
+  if (!text || !entries.length) {
+    return null;
+  }
+
+  const ranges = getHighlightRanges(text, unit, size);
+  if (!ranges.length) {
+    return null;
+  }
+
+  return {
+    container,
+    entries,
+    ranges,
+    contentLength: Math.max(
+      1,
+      direction === "horizontal" ? container.scrollWidth : container.scrollHeight,
+    ),
+  };
+}
+
+function SettingsActionIcon({
+  name,
+}: {
+  name: "download" | "upload" | "link" | "reset";
+}) {
+  const commonProps = {
+    className: "h-4 w-4",
+    fill: "none",
+    stroke: "currentColor",
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    strokeWidth: 2,
+    viewBox: "0 0 24 24",
+    "aria-hidden": true,
+  };
+
+  if (name === "download") {
+    return (
+      <svg {...commonProps}>
+        <path d="M12 3v12" />
+        <path d="m7 10 5 5 5-5" />
+        <path d="M5 21h14" />
+      </svg>
+    );
+  }
+
+  if (name === "upload") {
+    return (
+      <svg {...commonProps}>
+        <path d="M12 21V9" />
+        <path d="m7 14 5-5 5 5" />
+        <path d="M5 3h14" />
+      </svg>
+    );
+  }
+
+  if (name === "link") {
+    return (
+      <svg {...commonProps}>
+        <path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" />
+        <path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...commonProps}>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 3v6h6" />
+    </svg>
+  );
+}
+
 function HighlightedToken({
   token,
   unit,
@@ -568,11 +944,42 @@ function endsWithPausePunctuation(token: string): boolean {
   return /[.,!?;:]["')\]]?$/.test(token.trim());
 }
 
-function speedToPxPerSecond(spec: ConditionSpec): number {
+function getEstimatedCharsPerVerticalLine(spec: ConditionSpec): number {
+  const approxCharPx = Math.max(
+    1,
+    spec.typography.fontSizePx * 0.62 + spec.typography.letterSpacingPx,
+  );
+  const lineWidthPx =
+    spec.typography.useViewportWidth || spec.typography.lineWidthPx <= 0
+      ? Math.max(240, spec.window.width - spec.typography.viewportPaddingPx * 2)
+      : spec.typography.lineWidthPx;
+  return Math.max(1, lineWidthPx / approxCharPx);
+}
+
+function speedToPxPerSecond(
+  spec: ConditionSpec,
+  measuredPixelsPerCharacter?: number,
+): number {
   const safeCharsPerSecond = Math.max(1, spec.motion.speed.value);
+  if (
+    measuredPixelsPerCharacter != null &&
+    Number.isFinite(measuredPixelsPerCharacter) &&
+    measuredPixelsPerCharacter > 0
+  ) {
+    return Math.max(1, safeCharsPerSecond * measuredPixelsPerCharacter);
+  }
+
   const approxCharPx =
     spec.typography.fontSizePx * 0.62 + spec.typography.letterSpacingPx;
-  return Math.max(10, safeCharsPerSecond * Math.max(1, approxCharPx));
+  if (spec.motion.direction === "vertical") {
+    const lineHeightPx = spec.typography.fontSizePx * spec.typography.lineHeight;
+    return Math.max(
+      1,
+      safeCharsPerSecond *
+        (lineHeightPx / getEstimatedCharsPerVerticalLine(spec)),
+    );
+  }
+  return Math.max(1, safeCharsPerSecond * Math.max(1, approxCharPx));
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1403,7 +1810,6 @@ function RsvpRenderer({
     viewportStep.startsWith("sentence") || viewportStep.startsWith("paragraph");
   const useSentenceStructuredLayout =
     isSentenceOrParagraph &&
-    !highlightEnabled &&
     (spec.typography.paragraphStaircase.enabled ||
       spec.typography.sentenceMarkers.enabled);
   const horizontalJustify = isSentenceOrParagraph
@@ -1559,7 +1965,6 @@ function ContinuousRsvpRenderer({
   const isSentenceStructuredUnit =
     spec.tokenization.unit === "sentence" || spec.tokenization.unit === "paragraph";
   const useSentenceStructuredLayout =
-    !highlightEnabled &&
     direction === "vertical" &&
     isSentenceStructuredUnit &&
     (spec.typography.paragraphStaircase.enabled ||
@@ -1582,14 +1987,15 @@ function ContinuousRsvpRenderer({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const measureUnitRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const loopUnitRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const windowCentersRef = useRef<number[]>([]);
+  const highlightLayoutRef = useRef<ContinuousHighlightLayout | null>(null);
   const measureStartRef = useRef(0);
   const contentLengthRef = useRef(1);
   const cycleLengthRef = useRef(1);
   const offsetPxRef = useRef(0);
   const activeWindowStartIndexRef = useRef(0);
+  const [activeHighlightRects, setActiveHighlightRects] = useState<HighlightRect[]>([]);
+  const activeHighlightRectsReadyRef = useRef(false);
+  const [highlightPositionCount, setHighlightPositionCount] = useState(1);
   const loopGapPx = Math.max(
     12,
     direction === "vertical"
@@ -1606,110 +2012,55 @@ function ContinuousRsvpRenderer({
     [direction, rawText, spec.tokenization.unit],
   );
   const displayText = text || "Enter text to begin";
-  const baseHighlightRanges = useMemo(
-    () =>
-      getHighlightRanges(displayText, rsvpHighlight.unit, 1),
-    [displayText, rsvpHighlight.unit],
-  );
   const highlightWindowSize = useMemo(
     () => Math.max(1, Math.floor(rsvpHighlight.size || 1)),
     [rsvpHighlight.size],
   );
-  const highlightPositionCount = useMemo(() => {
-    if (!baseHighlightRanges.length) {
-      return 1;
-    }
-    return Math.max(
-      1,
-      baseHighlightRanges.length - Math.min(highlightWindowSize, baseHighlightRanges.length) + 1,
-    );
-  }, [baseHighlightRanges.length, highlightWindowSize]);
 
   const highlightStyle = useMemo(
-    () => getHighlightSpanStyle(rsvpHighlight.style),
+    () => getHighlightOverlayStyle(rsvpHighlight.style),
     [rsvpHighlight.style],
-  );
-
-  const applyHighlightStyleToNode = useCallback(
-    (node: HTMLSpanElement | null, active: boolean) => {
-      if (!node) {
-        return;
-      }
-      node.style.fontWeight = "";
-      node.style.backgroundColor = "";
-      node.style.boxShadow = "";
-      node.style.borderRadius = "";
-      node.style.paddingInline = "";
-
-      if (!active || !highlightEnabled) {
-        return;
-      }
-
-      if (highlightStyle.fontWeight != null) {
-        node.style.fontWeight = String(highlightStyle.fontWeight);
-      }
-      if (highlightStyle.backgroundColor != null) {
-        node.style.backgroundColor = String(highlightStyle.backgroundColor);
-      }
-      if (highlightStyle.boxShadow != null) {
-        node.style.boxShadow = String(highlightStyle.boxShadow);
-      }
-      if (highlightStyle.borderRadius != null) {
-        node.style.borderRadius = String(highlightStyle.borderRadius);
-      }
-      if (highlightStyle.paddingInline != null) {
-        node.style.paddingInline = String(highlightStyle.paddingInline);
-      }
-    },
-    [highlightEnabled, highlightStyle],
   );
 
   const applyHighlightWindow = useCallback(
     (startIndex: number) => {
-      const totalUnits = baseHighlightRanges.length;
-      if (!highlightEnabled || totalUnits === 0) {
-        measureUnitRefs.current.forEach((node) =>
-          applyHighlightStyleToNode(node, false),
-        );
-        loopUnitRefs.current.forEach((node) =>
-          applyHighlightStyleToNode(node, false),
-        );
+      const layout = highlightLayoutRef.current;
+      const totalWindows = layout?.ranges.length ?? 0;
+      if (!highlightEnabled || !layout || totalWindows === 0) {
         activeWindowStartIndexRef.current = 0;
+        activeHighlightRectsReadyRef.current = false;
+        setActiveHighlightRects([]);
         return;
       }
 
-      const effectiveWindowSize = Math.min(highlightWindowSize, totalUnits);
-      const maxStart = Math.max(0, totalUnits - effectiveWindowSize);
+      const maxStart = Math.max(0, totalWindows - 1);
       const nextStart = clamp(startIndex, 0, maxStart);
-      const previousStart = activeWindowStartIndexRef.current;
-      const previousEnd = previousStart + effectiveWindowSize - 1;
-      const nextEnd = nextStart + effectiveWindowSize - 1;
-      const rangeStart = Math.max(0, Math.min(previousStart, nextStart));
-      const rangeEnd = Math.min(
-        totalUnits - 1,
-        Math.max(previousEnd, nextEnd),
-      );
-
-      for (let index = rangeStart; index <= rangeEnd; index += 1) {
-        const isActive = index >= nextStart && index <= nextEnd;
-        applyHighlightStyleToNode(measureUnitRefs.current[index] ?? null, isActive);
-        applyHighlightStyleToNode(loopUnitRefs.current[index] ?? null, isActive);
+      if (nextStart === activeWindowStartIndexRef.current && activeHighlightRectsReadyRef.current) {
+        return;
       }
-
       activeWindowStartIndexRef.current = nextStart;
+      const range = layout.ranges[nextStart];
+      activeHighlightRectsReadyRef.current = true;
+      setActiveHighlightRects(
+        range
+          ? getTextRangeRects({
+              container: layout.container,
+              entries: layout.entries,
+              start: range.start,
+              end: range.end,
+            })
+          : [],
+      );
     },
-    [
-      applyHighlightStyleToNode,
-      baseHighlightRanges.length,
-      highlightEnabled,
-      highlightWindowSize,
-    ],
+    [highlightEnabled],
   );
 
   const measureContinuousLayout = useCallback(() => {
     const measureNode = measureRef.current;
     if (!measureNode) {
-      windowCentersRef.current = [];
+      highlightLayoutRef.current = null;
+      activeHighlightRectsReadyRef.current = false;
+      setHighlightPositionCount(1);
       return;
     }
 
@@ -1720,87 +2071,64 @@ function ContinuousRsvpRenderer({
       direction === "horizontal" ? measureNode.scrollWidth : measureNode.scrollHeight,
     );
     cycleLengthRef.current = Math.max(1, contentLengthRef.current + loopGapPx);
+    const readableText = collectReadableTextNodes(measureNode).text;
+    const measuredPixelsPerCharacter =
+      readableText.length > 0
+        ? contentLengthRef.current / readableText.length
+        : undefined;
+    pxPerSecondRef.current = speedToPxPerSecond(
+      spec,
+      measuredPixelsPerCharacter,
+    );
 
-    const metrics =
-      direction === "vertical"
-        ? baseHighlightRanges.map((range) => {
-            const totalChars = Math.max(1, displayText.length);
-            const startRatio = range.start / totalChars;
-            const endRatio = range.end / totalChars;
-            return {
-              start: startRatio * contentLengthRef.current,
-              end: Math.max(
-                startRatio * contentLengthRef.current + 1,
-                endRatio * contentLengthRef.current,
-              ),
-            };
-          })
-        : measureUnitRefs.current
-            .map((node) => {
-              if (!node) {
-                return null;
-              }
-              const start = node.offsetLeft;
-              const size = node.offsetWidth;
-              return {
-                start,
-                end: start + Math.max(1, size),
-              };
-            })
-            .filter(
-              (entry): entry is { start: number; end: number } => entry != null,
-            );
-
-    if (!metrics.length) {
-      windowCentersRef.current = [];
+    if (!highlightEnabled) {
+      highlightLayoutRef.current = null;
+      setHighlightPositionCount(1);
+      activeHighlightRectsReadyRef.current = false;
+      setActiveHighlightRects([]);
       return;
     }
 
-    const effectiveWindowSize = Math.min(highlightWindowSize, metrics.length);
-    const nextCenters: number[] = [];
-    for (let startIndex = 0; startIndex <= metrics.length - effectiveWindowSize; startIndex += 1) {
-      const startMetric = metrics[startIndex];
-      const endMetric = metrics[startIndex + effectiveWindowSize - 1];
-      if (!startMetric || !endMetric) {
-        continue;
-      }
-      nextCenters.push((startMetric.start + endMetric.end) / 2);
-    }
-    windowCentersRef.current = nextCenters.length ? nextCenters : [metrics[0]?.start ?? 0];
-  }, [baseHighlightRanges, direction, displayText.length, highlightWindowSize, loopGapPx]);
-
-  const findNearestWindowIndex = useCallback((target: number) => {
-    const centers = windowCentersRef.current;
-    if (!centers.length) {
-      return 0;
-    }
-
-    let low = 0;
-    let high = centers.length - 1;
-    while (low < high) {
-      const mid = Math.floor((low + high) / 2);
-      const value = centers[mid] ?? 0;
-      if (value < target) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-
-    const candidates = [low - 1, low, low + 1].filter(
-      (index) => index >= 0 && index < centers.length,
-    );
-    let bestIndex = low;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    candidates.forEach((index) => {
-      const distance = Math.abs((centers[index] ?? 0) - target);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestIndex = index;
-      }
+    const layout = buildContinuousHighlightLayout({
+      container: measureNode,
+      direction,
+      unit: rsvpHighlight.unit,
+      size: highlightWindowSize,
     });
-    return bestIndex;
-  }, []);
+    highlightLayoutRef.current = layout;
+    const nextPositionCount = Math.max(1, layout?.ranges.length ?? 1);
+    setHighlightPositionCount(nextPositionCount);
+    if (!layout) {
+      activeHighlightRectsReadyRef.current = false;
+      setActiveHighlightRects([]);
+      return;
+    }
+    contentLengthRef.current = layout.contentLength;
+    cycleLengthRef.current = Math.max(1, layout.contentLength + loopGapPx);
+    activeWindowStartIndexRef.current = Math.min(
+      activeWindowStartIndexRef.current,
+      nextPositionCount - 1,
+    );
+    const activeRange = layout.ranges[activeWindowStartIndexRef.current];
+    activeHighlightRectsReadyRef.current = true;
+    setActiveHighlightRects(
+      activeRange
+        ? getTextRangeRects({
+            container: layout.container,
+            entries: layout.entries,
+            start: activeRange.start,
+            end: activeRange.end,
+          })
+        : [],
+    );
+  }, [
+    direction,
+    highlightEnabled,
+    highlightWindowSize,
+    loopGapPx,
+    rsvpHighlight.unit,
+    spec,
+  ]);
 
   const syncActiveWindow = useCallback(() => {
     if (!highlightEnabled || highlightPositionCount <= 1) {
@@ -1821,14 +2149,15 @@ function ContinuousRsvpRenderer({
     const contentLength = Math.max(1, contentLengthRef.current);
     const relativeFocus =
       ((offsetPxRef.current + focusPoint - measureStartRef.current) % contentLength +
-        contentLength) %
+      contentLength) %
       contentLength;
-    const nextIndex = findNearestWindowIndex(relativeFocus);
+    const nextIndex = Math.round(
+      (relativeFocus / contentLength) * (highlightPositionCount - 1),
+    );
     applyHighlightWindow(nextIndex);
   }, [
     applyHighlightWindow,
     direction,
-    findNearestWindowIndex,
     highlightEnabled,
     highlightPositionCount,
   ]);
@@ -1838,10 +2167,13 @@ function ContinuousRsvpRenderer({
     if (!track) {
       return;
     }
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const snappedOffset =
+      Math.round(offsetPxRef.current * devicePixelRatio) / devicePixelRatio;
     track.style.transform =
       direction === "horizontal"
-        ? `translateX(${-offsetPxRef.current}px)`
-        : `translateY(${-offsetPxRef.current}px)`;
+        ? `translateX(${-snappedOffset}px)`
+        : `translateY(${-snappedOffset}px)`;
   }, [direction]);
 
   useEffect(() => {
@@ -1901,11 +2233,6 @@ function ContinuousRsvpRenderer({
     if (measureNode.parentElement) {
       resizeObserver.observe(measureNode.parentElement);
     }
-    measureUnitRefs.current.forEach((node) => {
-      if (node) {
-        resizeObserver.observe(node);
-      }
-    });
     window.addEventListener("resize", updateLayout);
     return () => {
       resizeObserver.disconnect();
@@ -1983,11 +2310,6 @@ function ContinuousRsvpRenderer({
   );
 
   useEffect(() => {
-    measureUnitRefs.current = [];
-    loopUnitRefs.current = [];
-  }, [direction, displayText, highlightWindowSize, rsvpHighlight.unit]);
-
-  useEffect(() => {
     if (spec.mode !== "continuous" || !highlightEnabled) {
       const frameId = window.requestAnimationFrame(() => {
         applyHighlightWindow(0);
@@ -2014,52 +2336,14 @@ function ContinuousRsvpRenderer({
   ]);
 
   useEffect(() => {
+    activeWindowStartIndexRef.current = 0;
+    activeHighlightRectsReadyRef.current = false;
     const frameId = window.requestAnimationFrame(() => {
       measureContinuousLayout();
       syncActiveWindow();
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [measureContinuousLayout, resetHighlightKey, syncActiveWindow]);
-
-  const renderUnitizedText = useCallback((kind: "measure" | "loop") => {
-    const fragments: ReactNode[] = [];
-    let previousEnd = 0;
-    baseHighlightRanges.forEach((range, index) => {
-      const gap = displayText.slice(previousEnd, range.start);
-      if (gap) {
-        fragments.push(
-          <span key={`gap-${index}-${previousEnd}`}>
-            {gap}
-          </span>,
-        );
-      }
-      const segment = displayText.slice(range.start, range.end);
-      fragments.push(
-        <span
-          key={`unit-${index}-${range.start}`}
-          ref={(node) => {
-            if (kind === "measure") {
-              measureUnitRefs.current[index] = node;
-            } else {
-              loopUnitRefs.current[index] = node;
-            }
-          }}
-        >
-          {segment}
-        </span>,
-      );
-      previousEnd = range.end;
-    });
-    const trailing = displayText.slice(previousEnd);
-    if (trailing) {
-      fragments.push(
-        <span key={`gap-trailing-${previousEnd}`}>
-          {trailing}
-        </span>,
-      );
-    }
-    return fragments.length ? fragments : displayText;
-  }, [baseHighlightRanges, displayText]);
 
   const contentChildren = useMemo(() => {
     if (useSentenceStructuredLayout) {
@@ -2084,20 +2368,10 @@ function ContinuousRsvpRenderer({
           ? "block w-full whitespace-pre-wrap break-words"
           : "block w-full whitespace-pre";
 
-    if (!highlightEnabled) {
-      return <span className={streamClassName}>{displayText}</span>;
-    }
-
-    return (
-      <span className={streamClassName}>
-        {renderUnitizedText("loop")}
-      </span>
-    );
+    return <span className={streamClassName}>{displayText}</span>;
   }, [
     displayText,
     direction,
-    highlightEnabled,
-    renderUnitizedText,
     spec.motion.wrapVerticalText,
     spec.typography.fontSizePx,
     spec.typography.lineWidthPx,
@@ -2109,30 +2383,42 @@ function ContinuousRsvpRenderer({
     useSentenceStructuredLayout,
   ]);
 
+  const highlightOverlay = highlightEnabled && activeHighlightRects.length ? (
+    <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+      {activeHighlightRects.map((rect, index) => (
+        <span
+          key={`${index}-${Math.round(rect.left)}-${Math.round(rect.top)}`}
+          className="absolute block"
+          style={{
+            ...highlightStyle,
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+          }}
+        />
+      ))}
+    </div>
+  ) : null;
+
   const renderContinuousContent = (
     measurementRef?: RefObject<HTMLDivElement | null>,
-    registerRefs = false,
   ) => (
     <div
       ref={measurementRef}
       className={`${contentClassName} relative`}
       style={contentStyle}
     >
-      {registerRefs && highlightEnabled && !useSentenceStructuredLayout ? (
-        <span
-          className={
-            direction === "horizontal"
-              ? "inline-block whitespace-nowrap"
-              : spec.motion.wrapVerticalText
-                ? "block w-full whitespace-pre-wrap break-words"
-                : "block w-full whitespace-pre"
-          }
-        >
-          {renderUnitizedText("measure")}
-        </span>
-      ) : (
-        contentChildren
-      )}
+      {highlightOverlay}
+      <div
+        className={
+          direction === "horizontal"
+            ? "relative z-10 inline-block"
+            : "relative z-10"
+        }
+      >
+        {contentChildren}
+      </div>
     </div>
   );
 
@@ -2159,7 +2445,7 @@ function ContinuousRsvpRenderer({
               gap: loopGapPx,
             }}
           >
-            {renderContinuousContent(measureRef, true)}
+            {renderContinuousContent(measureRef)}
             <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
@@ -2172,7 +2458,7 @@ function ContinuousRsvpRenderer({
               gap: loopGapPx,
             }}
           >
-            {renderContinuousContent(measureRef, true)}
+            {renderContinuousContent(measureRef)}
             <div aria-hidden="true">{renderContinuousContent()}</div>
           </div>
         </div>
@@ -2211,7 +2497,11 @@ function Viewport({
       className={`h-full w-full overflow-hidden border border-zinc-300 select-none ${
         manualAdvanceEnabled ? "cursor-pointer" : ""
       }`}
-      style={{ padding: spec.typography.viewportPaddingPx }}
+      style={{
+        padding: spec.typography.viewportPaddingPx,
+        color: spec.typography.fontColor,
+        backgroundColor: spec.typography.backgroundColor,
+      }}
       onClick={manualAdvanceEnabled ? onManualAdvance : undefined}
       onMouseMove={onViewportMouseMove}
       onMouseLeave={onViewportMouseLeave}
@@ -2258,11 +2548,14 @@ export default function Home() {
   const [isResizingViewport, setIsResizingViewport] = useState(false);
   const [settingsName, setSettingsName] = useState("condition-spec");
   const [settingsModalError, setSettingsModalError] = useState("");
+  const [settingsModalStatus, setSettingsModalStatus] = useState("");
+  const [shareLinkFallback, setShareLinkFallback] = useState("");
   const [text, setText] = useState("");
   const [resetContinuousHighlightKey, setResetContinuousHighlightKey] = useState(0);
   const logsRef = useRef<LogEntry[]>([]);
   const rsvpIndexRef = useRef(0);
   const baseSpeedBeforeMouseRef = useRef<number | null>(null);
+  const sharedTextLoadedRef = useRef(false);
   const splitViewRef = useRef<HTMLDivElement | null>(null);
   const viewportAreaRef = useRef<HTMLDivElement | null>(null);
   const viewportResizeStartRef = useRef<{
@@ -2311,7 +2604,7 @@ export default function Home() {
           return;
         }
         const loadedText = await response.text();
-        if (!cancelled) {
+        if (!cancelled && !sharedTextLoadedRef.current) {
           setText(loadedText);
         }
       } catch {
@@ -2707,19 +3000,52 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }, [settingsName, settingsPayload]);
 
-  const handleCopySettings = useCallback(async () => {
+  const handleCopyShareLink = useCallback(async () => {
     try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard not available in this browser.");
+      const payloadWithText: SharePayloadV1 = {
+        version: 1,
+        settings: settingsPayload,
+        text,
+      };
+      let encodedPayload = await encodeSharePayload(payloadWithText);
+      let shareUrl = buildShareUrlFromEncodedPayload(encodedPayload);
+      let omittedText = false;
+
+      if (shareUrl.length > SHARE_URL_MAX_LENGTH) {
+        omittedText = true;
+        encodedPayload = await encodeSharePayload({
+          version: 1,
+          settings: settingsPayload,
+        });
+        shareUrl = buildShareUrlFromEncodedPayload(encodedPayload);
       }
-      await navigator.clipboard.writeText(JSON.stringify(settingsPayload, null, 2));
+
       setSettingsModalError("");
+      setSettingsModalStatus(
+        omittedText
+          ? "Share link copied. Text was omitted because it was too long for a reliable URL."
+          : "Share link copied.",
+      );
+      setShareLinkFallback("");
+
+      if (!navigator.clipboard?.writeText) {
+        setShareLinkFallback(shareUrl);
+        setSettingsModalStatus(
+          omittedText
+            ? "Share link generated below. Text was omitted because it was too long for a reliable URL."
+            : "Share link generated below.",
+        );
+        return;
+      }
+
+      await navigator.clipboard.writeText(shareUrl);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Failed to copy settings JSON.";
+        error instanceof Error ? error.message : "Failed to generate share link.";
       setSettingsModalError(message);
+      setSettingsModalStatus("");
     }
-  }, [settingsPayload]);
+  }, [settingsPayload, text]);
 
   const handleResetDefaults = useCallback(() => {
     const defaultSpec: ConditionSpec = {
@@ -2744,10 +3070,11 @@ export default function Home() {
     setViewportHeightPercent(VIEWPORT_SIZE_MAX_PERCENT);
     baseSpeedBeforeMouseRef.current = null;
     setSettingsModalError("");
+    setSettingsModalStatus("");
+    setShareLinkFallback("");
   }, []);
 
-  const handleUploadSettingsFile = useCallback(async (file: File) => {
-    const raw = await file.text();
+  const handleImportSettingsText = useCallback(async (raw: string) => {
     const parsed = JSON.parse(raw) as Omit<Partial<ConditionSpec>, "typography" | "motion"> & {
       typography?: Partial<ConditionSpec["typography"]> & {
         sentenceMarkers?: Partial<ConditionSpec["typography"]["sentenceMarkers"]> & {
@@ -2786,6 +3113,13 @@ export default function Home() {
       typography: {
         ...conditionSpec.typography,
         ...parsed.typography,
+        fontFamily: normalizeFontFamily(parsed.typography?.fontFamily),
+        fontColor: isHexColor(parsed.typography?.fontColor)
+          ? parsed.typography.fontColor
+          : conditionSpec.typography.fontColor,
+        backgroundColor: isHexColor(parsed.typography?.backgroundColor)
+          ? parsed.typography.backgroundColor
+          : conditionSpec.typography.backgroundColor,
         viewportPaddingPx: Number.isFinite(
           Number(parsed.typography?.viewportPaddingPx),
         )
@@ -3006,7 +3340,56 @@ export default function Home() {
       ),
     );
     setSettingsModalError("");
+    setSettingsModalStatus("");
+    setShareLinkFallback("");
   }, []);
+
+  const handleUploadSettingsFile = useCallback(
+    async (file: File) => {
+      await handleImportSettingsText(await file.text());
+    },
+    [handleImportSettingsText],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSharedPayload = async () => {
+      const hash = window.location.hash.slice(1);
+      if (!hash.startsWith(SHARE_HASH_PREFIX)) {
+        return;
+      }
+
+      try {
+        const payload = await decodeSharePayload(
+          hash.slice(SHARE_HASH_PREFIX.length),
+        );
+        if (cancelled) {
+          return;
+        }
+        await handleImportSettingsText(JSON.stringify(payload.settings));
+        if (typeof payload.text === "string") {
+          sharedTextLoadedRef.current = true;
+          setText(payload.text);
+        }
+        setSettingsModalError("");
+        setSettingsModalStatus("Shared settings loaded.");
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : "Failed to load share link.";
+        setSettingsModalError(message);
+        setSettingsModalStatus("");
+      }
+    };
+
+    void loadSharedPayload();
+    return () => {
+      cancelled = true;
+    };
+  }, [handleImportSettingsText]);
 
   const handleSettingsFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -3676,6 +4059,72 @@ export default function Home() {
                       </h3>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <label className="flex flex-col gap-1">
+                          Font Family
+                          <select
+                            className="rounded border border-zinc-300 px-2 py-1"
+                            value={spec.typography.fontFamily}
+                            onChange={(e) =>
+                              setSpec((prev) => ({
+                                ...prev,
+                                typography: {
+                                  ...prev.typography,
+                                  fontFamily: e.target.value,
+                                },
+                              }))
+                            }
+                          >
+                            {FONT_FAMILY_OPTIONS.map((option) => (
+                              <option key={option.label} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          Font Color
+                          <span className="flex items-center gap-2">
+                            <input
+                              className="h-9 w-12 rounded border border-zinc-300"
+                              type="color"
+                              value={spec.typography.fontColor}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    fontColor: e.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                            <span className="font-mono text-xs text-zinc-600">
+                              {spec.typography.fontColor}
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          Background Color
+                          <span className="flex items-center gap-2">
+                            <input
+                              className="h-9 w-12 rounded border border-zinc-300"
+                              type="color"
+                              value={spec.typography.backgroundColor}
+                              onChange={(e) =>
+                                setSpec((prev) => ({
+                                  ...prev,
+                                  typography: {
+                                    ...prev.typography,
+                                    backgroundColor: e.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                            <span className="font-mono text-xs text-zinc-600">
+                              {spec.typography.backgroundColor}
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex flex-col gap-1">
                           Font Size: {spec.typography.fontSizePx}px
                           <input
                             className="w-full"
@@ -4300,7 +4749,7 @@ export default function Home() {
                 Close
               </button>
             </div>
-            <div className="mb-3 grid gap-3 sm:grid-cols-[1fr_auto_auto_auto_auto]">
+            <div className="mb-3 grid gap-3 lg:grid-cols-[minmax(220px,1fr)_auto_auto_auto]">
               <label className="flex flex-col gap-1 text-sm">
                 Name
                 <input
@@ -4310,34 +4759,49 @@ export default function Home() {
                   onChange={(e) => setSettingsName(e.target.value)}
                 />
               </label>
-              <button
-                type="button"
-                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
-                onClick={handleDownloadSettings}
-              >
-                Download JSON
-              </button>
-              <button
-                type="button"
-                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
-                onClick={() => void handleCopySettings()}
-              >
-                Copy JSON
-              </button>
-              <button
-                type="button"
-                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
-                onClick={() => settingsFileInputRef.current?.click()}
-              >
-                Upload JSON
-              </button>
-              <button
-                type="button"
-                className="self-end rounded border border-zinc-300 px-3 py-1 text-sm"
-                onClick={handleResetDefaults}
-              >
-                Reset Defaults
-              </button>
+              <div className="flex flex-col gap-1 self-end">
+                <span className="text-xs text-zinc-500">File</span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm"
+                    onClick={handleDownloadSettings}
+                  >
+                    <SettingsActionIcon name="download" />
+                    <span>Download JSON</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm"
+                    onClick={() => settingsFileInputRef.current?.click()}
+                  >
+                    <SettingsActionIcon name="upload" />
+                    <span>Upload JSON</span>
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1 self-end">
+                <span className="text-xs text-zinc-500">Share</span>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm"
+                  onClick={() => void handleCopyShareLink()}
+                >
+                  <SettingsActionIcon name="link" />
+                  <span>Copy Share Link</span>
+                </button>
+              </div>
+              <div className="flex flex-col gap-1 self-end">
+                <span className="text-xs text-zinc-500">Defaults</span>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm"
+                  onClick={handleResetDefaults}
+                >
+                  <SettingsActionIcon name="reset" />
+                  <span>Reset Defaults</span>
+                </button>
+              </div>
               <input
                 ref={settingsFileInputRef}
                 type="file"
@@ -4348,6 +4812,20 @@ export default function Home() {
             </div>
             {settingsModalError ? (
               <p className="mb-3 text-xs text-red-600">{settingsModalError}</p>
+            ) : null}
+            {settingsModalStatus ? (
+              <p className="mb-3 text-xs text-zinc-600">{settingsModalStatus}</p>
+            ) : null}
+            {shareLinkFallback ? (
+              <label className="mb-3 flex flex-col gap-1 text-xs text-zinc-600">
+                Share Link
+                <textarea
+                  className="min-h-20 rounded border border-zinc-300 p-2 font-mono text-xs text-zinc-900"
+                  readOnly
+                  value={shareLinkFallback}
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </label>
             ) : null}
             <pre className="max-h-[70vh] overflow-auto rounded border border-zinc-200 p-3 text-xs">
               {JSON.stringify(settingsPayload, null, 2)}

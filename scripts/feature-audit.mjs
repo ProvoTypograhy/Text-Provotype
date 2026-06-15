@@ -148,6 +148,26 @@ async function getSettingsPayload(page) {
   return JSON.parse(raw ?? "{}");
 }
 
+async function getShareLink(page) {
+  await page.evaluate(() => {
+    window.__copiedText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value) => {
+          window.__copiedText = value;
+        },
+      },
+    });
+  });
+  await page.getByRole("button", { name: "View Settings Json" }).click();
+  await page.getByRole("button", { name: "Copy Share Link" }).click();
+  await page.waitForTimeout(300);
+  const link = await page.evaluate(() => window.__copiedText || "");
+  await page.getByRole("button", { name: "Close" }).click();
+  return link;
+}
+
 async function uploadSettings(page, payload) {
   const filePath = path.join(os.tmpdir(), `feature-audit-${Date.now()}-${Math.random()}.json`);
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
@@ -514,6 +534,80 @@ try {
     expect(uploaded.payload.ui.viewportWidthPercent === 66, `Width was ${uploaded.payload.ui.viewportWidthPercent}.`);
     expect(uploaded.payload.ui.viewportHeightPercent === 77, `Height was ${uploaded.payload.ui.viewportHeightPercent}.`);
     return "Valid uploaded JSON restored selected values.";
+  });
+
+  await runCheck("Share", "Share link restores settings and short text", async () => {
+    await resetDefaults(page);
+    await page.locator("textarea").fill("Share text alpha beta.");
+    await selectOption(page, "Mode", "continuous");
+    await selectOption(page, "Direction", "vertical");
+    await setRange(page, "Viewport Width:", 64);
+    const link = await getShareLink(page);
+    expect(link.includes("#share="), `Share hash missing from link: ${link.slice(0, 120)}.`);
+
+    const sharedPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await sharedPage.goto(link, { waitUntil: "networkidle" });
+      await installControlFinder(sharedPage);
+      await sharedPage.waitForSelector("textarea");
+      await sharedPage.waitForTimeout(500);
+      const sharedText = await sharedPage.locator("textarea").inputValue();
+      const payload = await getSettingsPayload(sharedPage);
+      expect(sharedText === "Share text alpha beta.", `Shared text was ${sharedText}.`);
+      expect(payload.mode === "continuous", `Shared mode was ${payload.mode}.`);
+      expect(payload.motion.direction === "vertical", `Shared direction was ${payload.motion.direction}.`);
+      expect(payload.ui.viewportWidthPercent === 64, `Shared viewport width was ${payload.ui.viewportWidthPercent}.`);
+    } finally {
+      await sharedPage.close();
+    }
+    return "Share link restored short text and settings.";
+  });
+
+  await runCheck("Share", "Share link omits long text but restores settings", async () => {
+    await resetDefaults(page);
+    const longText = Array.from(
+      { length: 5000 },
+      (_, index) =>
+        `token-${index.toString(36)}-${((index * 2654435761) >>> 0).toString(36)}`,
+    ).join(" ");
+    await page.locator("textarea").fill(longText);
+    await selectOption(page, "Mode", "continuous");
+    await selectOption(page, "Direction", "vertical");
+    await setRange(page, "Viewport Height:", 58);
+    const link = await getShareLink(page);
+    expect(link.includes("#share="), "Share hash missing.");
+    expect(link.length <= 7000, `Share link length was ${link.length}.`);
+
+    const sharedPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await sharedPage.goto(link, { waitUntil: "networkidle" });
+      await installControlFinder(sharedPage);
+      await sharedPage.waitForSelector("textarea");
+      await sharedPage.waitForTimeout(500);
+      const sharedText = await sharedPage.locator("textarea").inputValue();
+      const payload = await getSettingsPayload(sharedPage);
+      expect(sharedText !== longText, "Long text should have been omitted from the share link.");
+      expect(payload.mode === "continuous", `Shared mode was ${payload.mode}.`);
+      expect(payload.motion.direction === "vertical", `Shared direction was ${payload.motion.direction}.`);
+      expect(payload.ui.viewportHeightPercent === 58, `Shared viewport height was ${payload.ui.viewportHeightPercent}.`);
+    } finally {
+      await sharedPage.close();
+    }
+    return `Long text omitted; link length=${link.length}.`;
+  });
+
+  await runCheck("Share", "Invalid share hash does not crash", async () => {
+    const sharedPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await sharedPage.goto(`${baseUrl}#share=v1.bad.not-real`, { waitUntil: "networkidle" });
+      await installControlFinder(sharedPage);
+      await sharedPage.waitForSelector("textarea");
+      const textareaCount = await sharedPage.locator("textarea").count();
+      expect(textareaCount === 1, `Textarea count was ${textareaCount}.`);
+    } finally {
+      await sharedPage.close();
+    }
+    return "Invalid share hash kept the app usable.";
   });
 
   await runCheck("JSON", "Invalid JSON upload shows error", async () => {
