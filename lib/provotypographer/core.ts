@@ -1,0 +1,1170 @@
+import type { CSSProperties } from "react";
+
+import { conditionSpec, type ConditionSpec } from "@/lib/condition-spec";
+
+export type LogEntry = {
+  event: "start" | "stop" | "tick" | "manual";
+  index: number;
+  timestamp: string;
+};
+
+export type TokenizationUnit = ConditionSpec["tokenization"]["unit"];
+export type ReaderMode = ConditionSpec["mode"];
+export type HighlightRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+export type ContinuousHighlightLayout = {
+  container: HTMLElement;
+  entries: Array<{ node: Text; start: number; end: number }>;
+  ranges: Array<{ start: number; end: number }>;
+  contentLength: number;
+};
+export type SettingsJson = ConditionSpec & {
+  ui?: {
+    viewportStep?: ViewportStep;
+    advanceStep?: number;
+    viewportWidthPercent?: number;
+    viewportHeightPercent?: number;
+  };
+};
+export type SharePayloadV1 = {
+  version: 1;
+  settings: SettingsJson;
+  text?: string;
+};
+export const RSVP_STEPS = [
+  "letter-1",
+  "letter-2",
+  "letter-3",
+  "word-1",
+  "word-2",
+  "word-3",
+  "sentence-1",
+  "sentence-2",
+  "sentence-3",
+  "paragraph-1",
+  "paragraph-2",
+  "paragraph-3",
+] as const;
+export const CONTINUOUS_STEPS = [...RSVP_STEPS] as const;
+export type ViewportStep = (typeof CONTINUOUS_STEPS)[number];
+export const MIN_SETTINGS_WIDTH = 280;
+export const MIN_VIEWPORT_WIDTH = 320;
+export const VIEWPORT_SIZE_MIN_PERCENT = 1;
+export const VIEWPORT_SIZE_MAX_PERCENT = 100;
+export const SPEED_MIN_CPS = 1;
+export const SPEED_MAX_CPS = 80;
+export const HIGHLIGHT_JUMP_RATE_MIN = 0.25;
+export const HIGHLIGHT_JUMP_RATE_MAX = 80;
+export const SHARE_HASH_PREFIX = "share=";
+export const SHARE_URL_MAX_LENGTH = 7000;
+export const FONT_FAMILY_OPTIONS = [
+  {
+    label: "Geist",
+    value: "Geist",
+  },
+  {
+    label: "System Sans",
+    value:
+      '"Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
+  {
+    label: "Serif",
+    value: 'Georgia, "Times New Roman", Times, serif',
+  },
+  {
+    label: "Monospace",
+    value:
+      '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+  },
+  {
+    label: "Arial",
+    value: "Arial, Helvetica, sans-serif",
+  },
+  {
+    label: "Verdana",
+    value: "Verdana, Geneva, sans-serif",
+  },
+] as const;
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+export const DEFAULT_TEXT_PATH = `${BASE_PATH}/default-text.txt`;
+export const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
+export const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
+  "letter-1": "1 L",
+  "letter-2": "2 L",
+  "letter-3": "3 L",
+  "word-1": "1 W",
+  "word-2": "2 W",
+  "word-3": "3 W",
+  "sentence-1": "1 S",
+  "sentence-2": "2 S",
+  "sentence-3": "3 S",
+  "paragraph-1": "1 P",
+  "paragraph-2": "2 P",
+  "paragraph-3": "3 P",
+};
+
+export function getViewportStepsForMode(mode: ReaderMode) {
+  return mode === "continuous" ? CONTINUOUS_STEPS : RSVP_STEPS;
+}
+
+export function getStepIndex(step: ViewportStep, mode: ReaderMode): number {
+  return getViewportStepsForMode(mode).indexOf(step);
+}
+
+export function getViewportTokenCount(step: ViewportStep): number {
+  const match = step.match(/-(\d)$/);
+  return match ? Number(match[1]) : 1;
+}
+
+export function getViewportStepFromTokenization(
+  unit: TokenizationUnit,
+  chunkSize: number,
+): ViewportStep {
+  const size = Math.max(1, Math.floor(chunkSize || 1));
+  if (unit === "sentence") {
+    if (size === 1) return "sentence-1";
+    if (size === 2) return "sentence-2";
+    return "sentence-3";
+  }
+  if (unit === "paragraph") {
+    if (size === 1) return "paragraph-1";
+    if (size === 2) return "paragraph-2";
+    return "paragraph-3";
+  }
+  if (unit === "char") {
+    if (size === 1) return "letter-1";
+    if (size === 2) return "letter-2";
+    return "letter-3";
+  }
+  if (size === 1) return "word-1";
+  if (size === 2) return "word-2";
+  return "word-3";
+}
+
+export function getTokenizationFromViewportStep(step: ViewportStep): {
+  unit: TokenizationUnit;
+  chunkSize: number;
+} {
+  if (step === "letter-1") return { unit: "char", chunkSize: 1 };
+  if (step === "letter-2") return { unit: "char", chunkSize: 2 };
+  if (step === "letter-3") return { unit: "char", chunkSize: 3 };
+  if (step === "word-1") return { unit: "word", chunkSize: 1 };
+  if (step === "word-2") return { unit: "word", chunkSize: 2 };
+  if (step === "word-3") return { unit: "word", chunkSize: 3 };
+  if (step === "sentence-1") return { unit: "sentence", chunkSize: 1 };
+  if (step === "sentence-2") return { unit: "sentence", chunkSize: 2 };
+  if (step === "sentence-3") return { unit: "sentence", chunkSize: 3 };
+  if (step === "paragraph-1") return { unit: "paragraph", chunkSize: 1 };
+  if (step === "paragraph-2") return { unit: "paragraph", chunkSize: 2 };
+  return { unit: "paragraph", chunkSize: 3 };
+}
+
+export function sanitizeSettingsName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+export function normalizeFontFamily(value: unknown): string {
+  if (typeof value !== "string") {
+    return conditionSpec.typography.fontFamily;
+  }
+  const trimmed = value.trim();
+  return trimmed || conditionSpec.typography.fontFamily;
+}
+
+export function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+export function base64UrlToBytes(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+export async function gzipString(value: string): Promise<Uint8Array | null> {
+  if (typeof CompressionStream === "undefined") {
+    return null;
+  }
+  const stream = new Blob([value])
+    .stream()
+    .pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+export async function gunzipString(bytes: Uint8Array): Promise<string> {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("Compressed share links are not supported in this browser.");
+  }
+  const buffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const stream = new Blob([buffer])
+    .stream()
+    .pipeThrough(new DecompressionStream("gzip"));
+  return await new Response(stream).text();
+}
+
+export function buildShareUrlFromEncodedPayload(encodedPayload: string): string {
+  const url = new URL(window.location.href);
+  url.hash = `${SHARE_HASH_PREFIX}${encodedPayload}`;
+  return url.toString();
+}
+
+export async function encodeSharePayload(payload: SharePayloadV1): Promise<string> {
+  const json = JSON.stringify(payload);
+  const plainPayload = `v1.j.${bytesToBase64Url(new TextEncoder().encode(json))}`;
+  const gzipped = await gzipString(json);
+  if (!gzipped) {
+    return plainPayload;
+  }
+  const gzipPayload = `v1.g.${bytesToBase64Url(gzipped)}`;
+  return gzipPayload.length < plainPayload.length ? gzipPayload : plainPayload;
+}
+
+export async function decodeSharePayload(encodedPayload: string): Promise<SharePayloadV1> {
+  const [version, encoding, body] = encodedPayload.split(".");
+  if (version !== "v1" || !body) {
+    throw new Error("Unsupported share link format.");
+  }
+
+  const raw =
+    encoding === "j"
+      ? new TextDecoder().decode(base64UrlToBytes(body))
+      : encoding === "g"
+        ? await gunzipString(base64UrlToBytes(body))
+        : null;
+  if (!raw) {
+    throw new Error("Unsupported share link encoding.");
+  }
+
+  const payload = JSON.parse(raw) as SharePayloadV1;
+  if (
+    !payload ||
+    payload.version !== 1 ||
+    !payload.settings ||
+    typeof payload.settings !== "object"
+  ) {
+    throw new Error("Invalid share link payload.");
+  }
+  return payload;
+}
+
+export function getRsvpDisplayToken(
+  tokens: string[],
+  startIndex: number,
+  viewportTokenCount: number,
+  unit: TokenizationUnit,
+): string {
+  if (!tokens.length) {
+    return "";
+  }
+
+  const size = Math.max(1, Math.floor(viewportTokenCount || 1));
+  const safeStart =
+    ((startIndex % tokens.length) + tokens.length) % tokens.length;
+  if (size === 1) {
+    return tokens[safeStart] ?? "";
+  }
+
+  const windowTokens: string[] = [];
+  for (let i = 0; i < size; i += 1) {
+    windowTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
+  }
+  if (unit === "char") {
+    return windowTokens.join("");
+  }
+  if (unit === "paragraph") {
+    return windowTokens.join("\n\n");
+  }
+  return windowTokens.join(" ");
+}
+
+export function splitAroundCenterCharacter(value: string): {
+  left: string;
+  center: string;
+  right: string;
+} {
+  if (!value) {
+    return { left: "", center: "", right: "" };
+  }
+  const chars = Array.from(value);
+  const centerIndex = Math.floor(chars.length / 2);
+  return {
+    left: chars.slice(0, centerIndex).join(""),
+    center: chars[centerIndex] ?? "",
+    right: chars.slice(centerIndex + 1).join(""),
+  };
+}
+
+export function getHighlightSegments(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+  jumpIndex?: number,
+): {
+  before: string;
+  highlight: string;
+  after: string;
+} {
+  const normalizeSegments = ({
+    before,
+    highlight,
+    after,
+  }: {
+    before: string;
+    highlight: string;
+    after: string;
+  }) => {
+    const highlightChars = Array.from(highlight);
+    let start = 0;
+    let end = highlightChars.length;
+
+    while (start < end && /\s/u.test(highlightChars[start] ?? "")) {
+      start += 1;
+    }
+    while (end > start && /\s/u.test(highlightChars[end - 1] ?? "")) {
+      end -= 1;
+    }
+
+    return {
+      before: before + highlightChars.slice(0, start).join(""),
+      highlight: highlightChars.slice(start, end).join(""),
+      after: highlightChars.slice(end).join("") + after,
+    };
+  };
+
+  if (!value) {
+    return { before: "", highlight: "", after: "" };
+  }
+
+  if (unit === "word") {
+    const wordMatches = Array.from(value.matchAll(/\S+/g));
+    if (!wordMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, wordMatches.length));
+    const maxStartWordIndex = Math.max(0, wordMatches.length - clampedSize);
+    const startWordIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((wordMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartWordIndex);
+    const endWordIndex = startWordIndex + clampedSize - 1;
+    const startMatch = wordMatches[startWordIndex];
+    const endMatch = wordMatches[endWordIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex =
+      (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return normalizeSegments({
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    });
+  }
+
+  if (unit === "sentence") {
+    const sentenceMatches = Array.from(value.matchAll(SENTENCE_REGEX));
+    if (!sentenceMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, sentenceMatches.length));
+    const maxStartSentenceIndex = Math.max(0, sentenceMatches.length - clampedSize);
+    const startSentenceIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((sentenceMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartSentenceIndex);
+    const endSentenceIndex = startSentenceIndex + clampedSize - 1;
+    const startMatch = sentenceMatches[startSentenceIndex];
+    const endMatch = sentenceMatches[endSentenceIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return normalizeSegments({
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    });
+  }
+
+  if (unit === "paragraph") {
+    const paragraphMatches = Array.from(
+      value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g),
+    ).filter((match) => Boolean(match[0]?.trim()));
+    if (!paragraphMatches.length) {
+      return { before: value, highlight: "", after: "" };
+    }
+    const clampedSize = Math.max(1, Math.min(size, paragraphMatches.length));
+    const maxStartParagraphIndex = Math.max(
+      0,
+      paragraphMatches.length - clampedSize,
+    );
+    const startParagraphIndex =
+      jumpIndex == null
+        ? Math.max(0, Math.floor((paragraphMatches.length - clampedSize) / 2))
+        : clamp(jumpIndex, 0, maxStartParagraphIndex);
+    const endParagraphIndex = startParagraphIndex + clampedSize - 1;
+    const startMatch = paragraphMatches[startParagraphIndex];
+    const endMatch = paragraphMatches[endParagraphIndex];
+    const startIndex = startMatch?.index ?? 0;
+    const endIndex = (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    return normalizeSegments({
+      before: value.slice(0, startIndex),
+      highlight: value.slice(startIndex, endIndex),
+      after: value.slice(endIndex),
+    });
+  }
+
+  const chars = Array.from(value);
+  const clampedSize = Math.max(1, Math.min(size, chars.length));
+  const maxStartIndex = Math.max(0, chars.length - clampedSize);
+  const startIndex =
+    jumpIndex == null
+      ? Math.max(0, Math.floor((chars.length - clampedSize) / 2))
+      : clamp(jumpIndex, 0, maxStartIndex);
+  return normalizeSegments({
+    before: chars.slice(0, startIndex).join(""),
+    highlight: chars.slice(startIndex, startIndex + clampedSize).join(""),
+    after: chars.slice(startIndex + clampedSize).join(""),
+  });
+}
+
+export function getHighlightPositionCount(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+): number {
+  if (!value) {
+    return 1;
+  }
+
+  const clampedSize = Math.max(1, size);
+
+  if (unit === "word") {
+    const wordCount = Array.from(value.matchAll(/\S+/g)).length;
+    return Math.max(1, wordCount - Math.min(clampedSize, wordCount) + 1);
+  }
+
+  if (unit === "sentence") {
+    const sentenceCount = Array.from(value.matchAll(SENTENCE_REGEX)).length;
+    return Math.max(
+      1,
+      sentenceCount - Math.min(clampedSize, sentenceCount) + 1,
+    );
+  }
+
+  if (unit === "paragraph") {
+    const paragraphCount = Array.from(
+      value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g),
+    ).filter((match) => Boolean(match[0]?.trim())).length;
+    return Math.max(
+      1,
+      paragraphCount - Math.min(clampedSize, paragraphCount) + 1,
+    );
+  }
+
+  const charCount = Array.from(value).length;
+  return Math.max(1, charCount - Math.min(clampedSize, charCount) + 1);
+}
+
+export function getHighlightRanges(
+  value: string,
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
+  size: number,
+): Array<{ start: number; end: number }> {
+  if (!value) {
+    return [{ start: 0, end: 0 }];
+  }
+
+  const clampedSize = Math.max(1, size);
+
+  const buildRangesFromMatches = (
+    matches: Array<{ index: number; length: number }>,
+  ) => {
+    if (!matches.length) {
+      return [{ start: 0, end: value.length }];
+    }
+    const windowSize = Math.min(clampedSize, matches.length);
+    const ranges: Array<{ start: number; end: number }> = [];
+    for (let startIndex = 0; startIndex <= matches.length - windowSize; startIndex += 1) {
+      const first = matches[startIndex];
+      const last = matches[startIndex + windowSize - 1];
+      if (!first || !last) {
+        continue;
+      }
+      ranges.push({
+        start: first.index,
+        end: last.index + last.length,
+      });
+    }
+    return ranges.length ? ranges : [{ start: 0, end: value.length }];
+  };
+
+  if (unit === "word") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(/\S+/g)).map((match) => ({
+        index: match.index ?? 0,
+        length: match[0].length,
+      })),
+    );
+  }
+
+  if (unit === "sentence") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+        index: match.index ?? 0,
+        length: match[0].length,
+      })),
+    );
+  }
+
+  if (unit === "paragraph") {
+    return buildRangesFromMatches(
+      Array.from(value.matchAll(/[\s\S]+?(?=(?:\n\s*\n+)|$)/g))
+        .filter((match) => Boolean(match[0]?.trim()))
+        .map((match) => ({
+          index: match.index ?? 0,
+          length: match[0].length,
+        })),
+    );
+  }
+
+  const chars = Array.from(value);
+  if (!chars.length) {
+    return [{ start: 0, end: 0 }];
+  }
+  const charOffsets: number[] = [];
+  let runningOffset = 0;
+  chars.forEach((char) => {
+    charOffsets.push(runningOffset);
+    runningOffset += char.length;
+  });
+  const windowSize = Math.min(clampedSize, chars.length);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let startIndex = 0; startIndex <= chars.length - windowSize; startIndex += 1) {
+    const start = charOffsets[startIndex] ?? 0;
+    const end =
+      startIndex + windowSize < charOffsets.length
+        ? (charOffsets[startIndex + windowSize] ?? runningOffset)
+        : runningOffset;
+    ranges.push({ start, end });
+  }
+  return ranges.length ? ranges : [{ start: 0, end: value.length }];
+}
+
+export function getHighlightSpanStyle(
+  highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
+): CSSProperties {
+  if (highlightStyle === "bold") {
+    return { fontWeight: 700 };
+  }
+  if (highlightStyle === "outline") {
+    return {
+      boxShadow: "inset 0 0 0 2px currentColor",
+      borderRadius: "0.12em",
+      paddingInline: "0.08em",
+    };
+  }
+  return {
+    backgroundColor: "rgba(250, 204, 21, 0.45)",
+    borderRadius: "0.12em",
+    paddingInline: "0.08em",
+  };
+}
+
+export function getHighlightOverlayStyle(
+  highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
+): CSSProperties {
+  if (highlightStyle === "bold") {
+    return {
+      backgroundColor: "rgba(250, 204, 21, 0.22)",
+      borderRadius: "0.12em",
+      outline: "1px solid rgba(24, 24, 27, 0.18)",
+    };
+  }
+  if (highlightStyle === "outline") {
+    return {
+      borderRadius: "0.12em",
+      boxShadow: "inset 0 0 0 2px currentColor",
+    };
+  }
+  return {
+    backgroundColor: "rgba(250, 204, 21, 0.45)",
+    borderRadius: "0.12em",
+  };
+}
+
+export function isInsideAriaHidden(node: Node): boolean {
+  let current: Node | null = node.parentNode;
+  while (current) {
+    if (
+      current instanceof HTMLElement &&
+      current.getAttribute("aria-hidden") === "true"
+    ) {
+      return true;
+    }
+    current = current.parentNode;
+  }
+  return false;
+}
+
+export function collectReadableTextNodes(root: HTMLElement) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const entries: Array<{
+    node: Text;
+    start: number;
+    end: number;
+  }> = [];
+  let text = "";
+  let current = walker.nextNode();
+
+  while (current) {
+    if (current instanceof Text && !isInsideAriaHidden(current)) {
+      const value = current.nodeValue ?? "";
+      if (value.length > 0) {
+        const start = text.length;
+        text += value;
+        entries.push({
+          node: current,
+          start,
+          end: start + value.length,
+        });
+      }
+    }
+    current = walker.nextNode();
+  }
+
+  return { text, entries };
+}
+
+export function findTextPosition(
+  entries: Array<{ node: Text; start: number; end: number }>,
+  offset: number,
+) {
+  if (!entries.length) {
+    return null;
+  }
+
+  const clampedOffset = clamp(offset, 0, entries[entries.length - 1]?.end ?? 0);
+  const exactEndEntry = entries.find(
+    (entry) => clampedOffset === entry.end && entry.end > entry.start,
+  );
+  if (exactEndEntry) {
+    return {
+      node: exactEndEntry.node,
+      offset: exactEndEntry.end - exactEndEntry.start,
+    };
+  }
+
+  const entry = entries.find(
+    (candidate) =>
+      clampedOffset >= candidate.start && clampedOffset < candidate.end,
+  );
+  if (!entry) {
+    const fallback = entries[entries.length - 1];
+    return fallback
+      ? {
+          node: fallback.node,
+          offset: fallback.end - fallback.start,
+        }
+      : null;
+  }
+
+  return {
+    node: entry.node,
+    offset: clampedOffset - entry.start,
+  };
+}
+
+export function getTextRangeRects({
+  container,
+  entries,
+  start,
+  end,
+}: {
+  container: HTMLElement;
+  entries: Array<{ node: Text; start: number; end: number }>;
+  start: number;
+  end: number;
+}): HighlightRect[] {
+  const rangeStart = findTextPosition(entries, start);
+  const rangeEnd = findTextPosition(entries, end);
+  if (!rangeStart || !rangeEnd) {
+    return [];
+  }
+
+  const range = document.createRange();
+  const containerRect = container.getBoundingClientRect();
+  range.setStart(rangeStart.node, rangeStart.offset);
+  range.setEnd(rangeEnd.node, rangeEnd.offset);
+  const rects = Array.from(range.getClientRects())
+    .map((rect) => ({
+      left: rect.left - containerRect.left,
+      top: rect.top - containerRect.top,
+      width: rect.width,
+      height: rect.height,
+    }))
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  range.detach();
+  return rects;
+}
+
+export function buildContinuousHighlightLayout({
+  container,
+  direction,
+  unit,
+  size,
+}: {
+  container: HTMLElement;
+  direction: ConditionSpec["motion"]["direction"];
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
+  size: number;
+}): ContinuousHighlightLayout | null {
+  const { text, entries } = collectReadableTextNodes(container);
+  if (!text || !entries.length) {
+    return null;
+  }
+
+  const ranges = getHighlightRanges(text, unit, size);
+  if (!ranges.length) {
+    return null;
+  }
+
+  return {
+    container,
+    entries,
+    ranges,
+    contentLength: Math.max(
+      1,
+      direction === "horizontal" ? container.scrollWidth : container.scrollHeight,
+    ),
+  };
+}
+
+export function endsWithPausePunctuation(token: string): boolean {
+  return /[.,!?;:]["')\]]?$/.test(token.trim());
+}
+
+export function getEstimatedCharsPerVerticalLine(spec: ConditionSpec): number {
+  const approxCharPx = Math.max(
+    1,
+    spec.typography.fontSizePx * 0.62 + spec.typography.letterSpacingPx,
+  );
+  const lineWidthPx =
+    spec.typography.useViewportWidth || spec.typography.lineWidthPx <= 0
+      ? Math.max(240, spec.window.width - spec.typography.viewportPaddingPx * 2)
+      : spec.typography.lineWidthPx;
+  return Math.max(1, lineWidthPx / approxCharPx);
+}
+
+export function speedToPxPerSecond(
+  spec: ConditionSpec,
+  measuredPixelsPerCharacter?: number,
+): number {
+  const safeCharsPerSecond = Math.max(1, spec.motion.speed.value);
+  if (
+    measuredPixelsPerCharacter != null &&
+    Number.isFinite(measuredPixelsPerCharacter) &&
+    measuredPixelsPerCharacter > 0
+  ) {
+    return Math.max(1, safeCharsPerSecond * measuredPixelsPerCharacter);
+  }
+
+  const approxCharPx =
+    spec.typography.fontSizePx * 0.62 + spec.typography.letterSpacingPx;
+  if (spec.motion.direction === "vertical") {
+    const lineHeightPx = spec.typography.fontSizePx * spec.typography.lineHeight;
+    return Math.max(
+      1,
+      safeCharsPerSecond *
+        (lineHeightPx / getEstimatedCharsPerVerticalLine(spec)),
+    );
+  }
+  return Math.max(1, safeCharsPerSecond * Math.max(1, approxCharPx));
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+export function getAdvanceCharacterCount(
+  tokens: string[],
+  startIndex: number,
+  advanceCount: number,
+  unit: TokenizationUnit,
+): number {
+  if (!tokens.length) {
+    return 1;
+  }
+
+  const safeStart =
+    ((startIndex % tokens.length) + tokens.length) % tokens.length;
+  const size = Math.max(1, Math.floor(advanceCount || 1));
+  const movedTokens: string[] = [];
+
+  for (let i = 0; i < size; i += 1) {
+    movedTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
+  }
+
+  const movedText = movedTokens.join(unit === "char" ? "" : " ");
+  return Math.max(1, movedText.length);
+}
+
+export function tokenizeText(
+  text: string,
+  unit: TokenizationUnit,
+  chunkSize: number,
+): string[] {
+  const size = Math.max(1, Math.floor(chunkSize || 1));
+
+  const baseTokens =
+    unit === "char"
+      ? Array.from(text)
+      : unit === "sentence"
+        ? (text.match(SENTENCE_REGEX) ?? [])
+            .map((token) => token.trim())
+            .filter(Boolean)
+        : unit === "paragraph"
+          ? text
+              .split(/\n\s*\n+/)
+              .map((token) => token.trim())
+              .filter(Boolean)
+        : text.trim().split(/\s+/).filter(Boolean);
+
+  if (!baseTokens.length) {
+    return [];
+  }
+
+  if (size === 1 && unit !== "chunk") {
+    return baseTokens;
+  }
+
+  const grouped: string[] = [];
+  for (let i = 0; i < baseTokens.length; i += size) {
+    grouped.push(
+      baseTokens.slice(i, i + size).join(unit === "char" ? "" : " "),
+    );
+  }
+
+  return grouped;
+}
+
+export function formatTokenAsSentenceLines(value: string): string {
+  if (!value.trim()) {
+    return "";
+  }
+  return (value.match(SENTENCE_REGEX) ?? [value])
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function splitTokenIntoParagraphs(value: string): string[] {
+  return value
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+export function splitParagraphIntoSentences(value: string): string[] {
+  return (value.match(SENTENCE_REGEX) ?? [value])
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+export function getSentenceMarkerGlyph(shape: string): string {
+  if (shape === "square") return "■";
+  if (shape === "diamond") return "◆";
+  if (shape === "triangle") return "▲";
+  return "●";
+}
+
+export function getSentenceMarkerColor(shape: string): string {
+  if (shape === "square") return "#2563eb";
+  if (shape === "diamond") return "#dc2626";
+  if (shape === "triangle") return "#16a34a";
+  return "#111111";
+}
+
+export const SENTENCE_MARKER_CYCLE = ["circle", "square", "diamond", "triangle"] as const;
+
+export function getMarkerVariantIndex({
+  unitIndex,
+  unitCount,
+  side,
+  mode,
+}: {
+  unitIndex: number;
+  unitCount: number;
+  side: "start" | "end";
+  mode: ConditionSpec["typography"]["sentenceMarkers"]["mode"];
+}) {
+  if (mode === "line" && unitCount <= 0) {
+    return null;
+  }
+  if (side === "start") {
+    return unitIndex === 0 ? null : unitIndex - 1;
+  }
+  return unitIndex >= unitCount - 1 ? null : unitIndex;
+}
+
+export function getSentenceMarkerAppearance({
+  variantIndex,
+  variationMode,
+}: {
+  variantIndex: number;
+  variationMode: ConditionSpec["typography"]["sentenceMarkers"]["variationMode"];
+}) {
+  const cycledShape =
+    SENTENCE_MARKER_CYCLE[variantIndex % SENTENCE_MARKER_CYCLE.length] ?? "circle";
+  return {
+    glyph: getSentenceMarkerGlyph(
+      variationMode === "color" ? "circle" : cycledShape,
+    ),
+    color:
+      variationMode === "shape"
+        ? undefined
+        : getSentenceMarkerColor(cycledShape),
+  };
+}
+
+export type RenderedLineRect = {
+  top: number;
+  left: number;
+  right: number;
+  height: number;
+};
+
+export function renderLineRectsFromElement(
+  container: HTMLElement,
+  target: HTMLElement,
+): RenderedLineRect[] {
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  const rawRects = Array.from(range.getClientRects()).filter(
+    (rect) => rect.width > 0 || rect.height > 0,
+  );
+  range.detach?.();
+
+  if (!rawRects.length) {
+    return [];
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const grouped: RenderedLineRect[] = [];
+
+  rawRects.forEach((rect) => {
+    const top = rect.top - containerRect.top;
+    const left = rect.left - containerRect.left;
+    const right = rect.right - containerRect.left;
+    const existing = grouped.find((entry) => Math.abs(entry.top - top) < 1);
+    if (existing) {
+      existing.left = Math.min(existing.left, left);
+      existing.right = Math.max(existing.right, right);
+      existing.height = Math.max(existing.height, rect.height);
+      return;
+    }
+    grouped.push({
+      top,
+      left,
+      right,
+      height: rect.height,
+    });
+  });
+
+  grouped.sort((a, b) => a.top - b.top);
+  return grouped;
+}
+
+export function countTextUnits(value: string): number {
+  return Array.from(value).length;
+}
+
+export type StaircaseLinePart = {
+  text: string;
+  sentenceIndex: number;
+  isSentenceStart: boolean;
+  isSentenceEnd: boolean;
+};
+
+export type StaircaseAppendInput = {
+  rawText: string;
+  sentenceIndex: number;
+  isSentenceStart: boolean;
+  isSentenceEnd: boolean;
+};
+
+export type StaircaseParagraphLine = {
+  lineIndex: number;
+  parts: StaircaseLinePart[];
+  continuationFromPreviousLineIndex: number | null;
+  continuationToNextLineIndex: number | null;
+};
+
+export function buildParagraphStaircaseLines({
+  paragraph,
+  startLineIndex,
+  getLineWidthCh,
+}: {
+  paragraph: string;
+  startLineIndex: number;
+  getLineWidthCh: (lineIndex: number) => number;
+}): StaircaseParagraphLine[] {
+  const sentences = splitParagraphIntoSentences(paragraph);
+  const lines: StaircaseParagraphLine[] = [];
+  let currentLineIndex = startLineIndex;
+  let currentLineParts: StaircaseLinePart[] = [];
+  let currentLineText = "";
+
+  const getSafeWidth = () => Math.max(6, Math.floor(getLineWidthCh(currentLineIndex)));
+
+  const pushCurrentLine = () => {
+    if (!currentLineParts.length) {
+      return;
+    }
+    lines.push({
+      lineIndex: currentLineIndex,
+      parts: currentLineParts,
+      continuationFromPreviousLineIndex: null,
+      continuationToNextLineIndex: null,
+    });
+    currentLineParts = [];
+    currentLineText = "";
+    currentLineIndex += 1;
+  };
+
+  const appendText = ({
+    rawText,
+    sentenceIndex,
+    isSentenceStart,
+    isSentenceEnd,
+  }: StaircaseAppendInput) => {
+    let remaining = rawText;
+    let atSentenceStart = isSentenceStart;
+
+    while (remaining) {
+      if (!currentLineText && /^\s/.test(remaining)) {
+        remaining = remaining.trimStart();
+        continue;
+      }
+
+      const availableWidth = getSafeWidth();
+      const nextValue = `${currentLineText}${remaining}`;
+      if (!currentLineText || countTextUnits(nextValue) <= availableWidth) {
+        currentLineText = nextValue;
+        currentLineParts.push({
+          text: remaining,
+          sentenceIndex,
+          isSentenceStart: atSentenceStart,
+          isSentenceEnd,
+        });
+        return;
+      }
+
+      let splitIndex = availableWidth - countTextUnits(currentLineText);
+      const sliceable = Array.from(remaining);
+      splitIndex = Math.max(1, Math.min(splitIndex, sliceable.length));
+
+      let chunk = sliceable.slice(0, splitIndex).join("");
+      const rest = sliceable.slice(splitIndex).join("");
+
+      if (sliceable.length > splitIndex) {
+        const breakpoint = Math.max(chunk.lastIndexOf(" "), chunk.lastIndexOf("\t"));
+        if (breakpoint > 0) {
+          chunk = chunk.slice(0, breakpoint + 1);
+        }
+      }
+
+      currentLineText = `${currentLineText}${chunk}`;
+      currentLineParts.push({
+        text: chunk,
+        sentenceIndex,
+        isSentenceStart: atSentenceStart,
+        isSentenceEnd: false,
+      });
+      pushCurrentLine();
+      remaining = remaining.slice(chunk.length);
+      atSentenceStart = false;
+
+      if (remaining === rest && !remaining.trim()) {
+        remaining = "";
+      }
+    }
+  };
+
+  sentences.forEach((sentence, sentenceIndex) => {
+    appendText({
+      rawText: sentence,
+      sentenceIndex,
+      isSentenceStart: true,
+      isSentenceEnd: true,
+    });
+  });
+
+  pushCurrentLine();
+
+  let continuationIndex = 0;
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const currentLine = lines[index];
+    const nextLine = lines[index + 1];
+    const currentLastPart = currentLine.parts[currentLine.parts.length - 1];
+    const nextFirstPart = nextLine.parts[0];
+    if (!currentLastPart || !nextFirstPart) {
+      continue;
+    }
+    const continuesAcrossLines =
+      currentLastPart.sentenceIndex === nextFirstPart.sentenceIndex &&
+      !currentLastPart.isSentenceEnd &&
+      !nextFirstPart.isSentenceStart;
+    if (!continuesAcrossLines) {
+      continue;
+    }
+    currentLine.continuationToNextLineIndex = continuationIndex;
+    nextLine.continuationFromPreviousLineIndex = continuationIndex;
+    continuationIndex += 1;
+  }
+
+  return lines;
+}
+
+export function getApproximateStaircaseWidthCh({
+  maxWidthCh,
+  lineWidthPx,
+  fontSizePx,
+}: {
+  maxWidthCh: number;
+  lineWidthPx: number;
+  fontSizePx: number;
+}) {
+  if (maxWidthCh > 0) {
+    return maxWidthCh;
+  }
+  return Math.max(24, Math.round(lineWidthPx / Math.max(1, fontSizePx * 0.6)));
+}
