@@ -45,6 +45,7 @@ import {
   type SharePayloadV1,
   type ViewportStep,
 } from "@/lib/provotypographer/core";
+import { exportViewportLoop } from "@/lib/provotypographer/loop-export";
 import { Viewport } from "./renderers/Viewport";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { SettingsJsonModal } from "./settings/SettingsJsonModal";
@@ -74,6 +75,9 @@ export function ProvotypographerApp() {
   const [settingsModalError, setSettingsModalError] = useState("");
   const [settingsModalStatus, setSettingsModalStatus] = useState("");
   const [shareLinkFallback, setShareLinkFallback] = useState("");
+  const [loopExportError, setLoopExportError] = useState("");
+  const [loopExportStatus, setLoopExportStatus] = useState("");
+  const [isLoopExporting, setIsLoopExporting] = useState(false);
   const [text, setText] = useState("");
   const [resetContinuousHighlightKey, setResetContinuousHighlightKey] = useState(0);
   const logsRef = useRef<LogEntry[]>([]);
@@ -82,6 +86,7 @@ export function ProvotypographerApp() {
   const sharedTextLoadedRef = useRef(false);
   const splitViewRef = useRef<HTMLDivElement | null>(null);
   const viewportAreaRef = useRef<HTMLDivElement | null>(null);
+  const exportViewportRef = useRef<HTMLDivElement | null>(null);
   const viewportResizeStartRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -538,6 +543,68 @@ export function ProvotypographerApp() {
     URL.revokeObjectURL(url);
   }, [settingsName, settingsPayload]);
 
+  const handleExportLoop = useCallback(async () => {
+    const node = exportViewportRef.current;
+    if (!node) {
+      setLoopExportError("The viewport is not ready to export.");
+      setLoopExportStatus("");
+      return;
+    }
+
+    try {
+      setIsLoopExporting(true);
+      setLoopExportError("");
+      setLoopExportStatus("Choose this tab to record the exact viewport.");
+
+      const result = await exportViewportLoop(
+        {
+          viewportNode: node,
+        },
+        {
+          durationMs: 5000,
+          fps: 30,
+          onCaptureReady: async () => {
+            setIsSpecModalOpen(false);
+            await new Promise<void>((resolve) => {
+              window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => resolve());
+              });
+            });
+          },
+          onProgress: ({ elapsedMs, durationMs }) => {
+            setLoopExportStatus(
+              `Recording exact viewport ${Math.ceil(elapsedMs / 1000)}/${Math.ceil(
+                durationMs / 1000,
+              )}s...`,
+            );
+          },
+        },
+      );
+      const safeName = sanitizeSettingsName(settingsName) || "condition-spec";
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${safeName}-loop.${result.extension}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      setLoopExportStatus(
+        result.extension === "mp4"
+          ? "Exact MP4 viewport loop downloaded."
+          : "Exact WebM viewport loop downloaded. MP4 was not available in this browser.",
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to export loop.";
+      setLoopExportError(message);
+      setLoopExportStatus("");
+    } finally {
+      setIsLoopExporting(false);
+      setIsSpecModalOpen(true);
+    }
+  }, [settingsName]);
+
   const handleCopyShareLink = useCallback(async () => {
     try {
       const payloadWithText: SharePayloadV1 = {
@@ -610,6 +677,8 @@ export function ProvotypographerApp() {
     setSettingsModalError("");
     setSettingsModalStatus("");
     setShareLinkFallback("");
+    setLoopExportError("");
+    setLoopExportStatus("");
   }, []);
 
   const handleImportSettingsText = useCallback(async (raw: string) => {
@@ -1105,19 +1174,21 @@ export function ProvotypographerApp() {
                     transform: "translate(-50%, -50%)",
                   }}
                 >
-                  <Viewport
-                    spec={spec}
-                    viewportStep={viewportStep}
-                    rsvpToken={currentRsvpToken}
-                    continuousText={text}
-                    highlightJumpRateHz={effectiveHighlightJumpRateHz}
-                    resetContinuousHighlightKey={resetContinuousHighlightKey}
-                    rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
-                    manualAdvanceEnabled={canManualAdvance}
-                    onManualAdvance={() => advanceRsvp("manual")}
-                    onViewportMouseMove={handleViewportMouseMove}
-                    onViewportMouseLeave={handleViewportMouseLeave}
-                  />
+                  <div ref={exportViewportRef} className="h-full w-full">
+                    <Viewport
+                      spec={spec}
+                      viewportStep={viewportStep}
+                      rsvpToken={currentRsvpToken}
+                      continuousText={text}
+                      highlightJumpRateHz={effectiveHighlightJumpRateHz}
+                      resetContinuousHighlightKey={resetContinuousHighlightKey}
+                      rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
+                      manualAdvanceEnabled={canManualAdvance}
+                      onManualAdvance={() => advanceRsvp("manual")}
+                      onViewportMouseMove={handleViewportMouseMove}
+                      onViewportMouseLeave={handleViewportMouseLeave}
+                    />
+                  </div>
                 </div>
                 {[
                   {
@@ -1153,6 +1224,9 @@ export function ProvotypographerApp() {
                     onPointerDown={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
+                      if (isLoopExporting) {
+                        return;
+                      }
                       viewportResizeStartRef.current = {
                         pointerX: event.clientX,
                         pointerY: event.clientY,
@@ -1180,6 +1254,9 @@ export function ProvotypographerApp() {
                 }`}
                 onPointerDown={(e) => {
                   e.preventDefault();
+                  if (isLoopExporting) {
+                    return;
+                  }
                   setIsResizingPanel(true);
                 }}
               />
@@ -1229,10 +1306,14 @@ export function ProvotypographerApp() {
         settingsModalError={settingsModalError}
         settingsModalStatus={settingsModalStatus}
         shareLinkFallback={shareLinkFallback}
+        loopExportError={loopExportError}
+        loopExportStatus={loopExportStatus}
+        isLoopExporting={isLoopExporting}
         settingsFileInputRef={settingsFileInputRef}
         onClose={() => setIsSpecModalOpen(false)}
         onSettingsNameChange={setSettingsName}
         onDownloadSettings={handleDownloadSettings}
+        onExportLoop={() => void handleExportLoop()}
         onCopyShareLink={() => void handleCopyShareLink()}
         onResetDefaults={handleResetDefaults}
         onSettingsFileChange={handleSettingsFileChange}

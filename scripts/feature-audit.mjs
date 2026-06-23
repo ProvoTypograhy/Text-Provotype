@@ -198,6 +198,24 @@ async function resetDefaults(page) {
   await page.waitForTimeout(150);
 }
 
+async function installUnsupportedLoopExportMock(page) {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "CropTarget", {
+      configurable: true,
+      value: undefined,
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 180;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () => canvas.captureStream(30),
+      },
+    });
+  });
+}
+
 async function getCounter(page) {
   return page.locator("text=/\\d+\\/\\d+/").first().textContent();
 }
@@ -520,6 +538,27 @@ try {
     await page.waitForTimeout(100);
     expect(await page.getByText("ConditionSpec").count() === 0, "Modal did not close.");
     return "Modal opened and closed.";
+  });
+
+  await runCheck("Export", "Loop export button handles unsupported Region Capture", async () => {
+    const exportPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(exportPage);
+      await installUnsupportedLoopExportMock(exportPage);
+      await exportPage.getByRole("button", { name: "View Settings Json" }).click();
+      await exportPage.getByRole("button", { name: "Export Loop" }).click();
+      const errorText = await exportPage
+        .getByText("This browser does not support viewport-only Region Capture. Use Chrome desktop and choose this tab.")
+        .textContent();
+      await exportPage.getByRole("button", { name: "Close" }).click();
+      expect(
+        errorText === "This browser does not support viewport-only Region Capture. Use Chrome desktop and choose this tab.",
+        `Error was ${errorText}.`,
+      );
+      return "Unsupported Region Capture surfaced an inline error.";
+    } finally {
+      await exportPage.close();
+    }
   });
 
   await runCheck("JSON", "Valid JSON upload restores values", async () => {
