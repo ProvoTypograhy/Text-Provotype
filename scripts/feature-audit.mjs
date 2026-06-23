@@ -433,14 +433,31 @@ try {
   await runCheck("Highlight", "Highlight style and size export", async () => {
     await selectOption(page, "Mode", "rsvp");
     await setRange(page, "Viewport Step", 5);
+    expect(
+      await page.getByText("Allow sentence-boundary highlight").isVisible(),
+      "Sentence-boundary highlight checkbox missing.",
+    );
+    expect(
+      await isControlDisabled(page, "Allow sentence-boundary highlight", "input"),
+      "Sentence-boundary highlight checkbox should be disabled while highlight is off.",
+    );
     await setCheckbox(page, "Enable Highlight", true);
+    expect(
+      !(await isControlDisabled(page, "Allow sentence-boundary highlight", "input")),
+      "Sentence-boundary highlight checkbox stayed disabled after highlight was enabled.",
+    );
+    await setCheckbox(page, "Allow sentence-boundary highlight", true);
     await selectOption(page, "Highlight Style", "outline");
     await setRange(page, "Highlight Size:", 2);
     const payload = await getSettingsPayload(page);
     expect(payload.typography.rsvpHighlight.enabled === true, "Highlight not enabled in JSON.");
+    expect(
+      payload.typography.rsvpHighlight.allowBoundaryCrossing === true,
+      "Sentence-boundary highlight setting did not export.",
+    );
     expect(payload.typography.rsvpHighlight.style === "outline", `Style was ${payload.typography.rsvpHighlight.style}.`);
     expect(payload.typography.rsvpHighlight.size >= 1, `Size was ${payload.typography.rsvpHighlight.size}.`);
-    return `Highlight exported as ${payload.typography.rsvpHighlight.unit}-${payload.typography.rsvpHighlight.size}, outline.`;
+    return `Highlight exported as ${payload.typography.rsvpHighlight.unit}-${payload.typography.rsvpHighlight.size}, outline, boundary crossing on.`;
   });
 
   await runCheck("Highlight", "RSVP highlight combined with markers/staircase", async () => {
@@ -567,12 +584,28 @@ try {
     payload.motion.direction = "vertical";
     payload.ui.viewportWidthPercent = 66;
     payload.ui.viewportHeightPercent = 77;
+    payload.typography.rsvpHighlight.allowBoundaryCrossing = true;
     const uploaded = await uploadSettings(page, payload);
     expect(uploaded.payload.mode === "continuous", `Mode was ${uploaded.payload.mode}.`);
     expect(uploaded.payload.motion.direction === "vertical", `Direction was ${uploaded.payload.motion.direction}.`);
     expect(uploaded.payload.ui.viewportWidthPercent === 66, `Width was ${uploaded.payload.ui.viewportWidthPercent}.`);
     expect(uploaded.payload.ui.viewportHeightPercent === 77, `Height was ${uploaded.payload.ui.viewportHeightPercent}.`);
+    expect(
+      uploaded.payload.typography.rsvpHighlight.allowBoundaryCrossing === true,
+      `Boundary crossing was ${uploaded.payload.typography.rsvpHighlight.allowBoundaryCrossing}.`,
+    );
     return "Valid uploaded JSON restored selected values.";
+  });
+
+  await runCheck("JSON", "Missing highlight boundary field imports as default false", async () => {
+    const payload = await getSettingsPayload(page);
+    delete payload.typography.rsvpHighlight.allowBoundaryCrossing;
+    const uploaded = await uploadSettings(page, payload);
+    expect(
+      uploaded.payload.typography.rsvpHighlight.allowBoundaryCrossing === false,
+      `Boundary crossing default was ${uploaded.payload.typography.rsvpHighlight.allowBoundaryCrossing}.`,
+    );
+    return "Missing boundary setting imported as false.";
   });
 
   await runCheck("Share", "Share link restores settings and short text", async () => {

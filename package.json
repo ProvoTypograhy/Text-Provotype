@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:highlight": "node --no-warnings --experimental-strip-types scripts/highlight-boundary-tests.mjs",
     "audit:features": "node scripts/feature-audit.mjs"
   },
   "dependencies": {

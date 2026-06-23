@@ -851,6 +851,11 @@ export function ProvotypographerApp() {
             typeof parsed.typography?.rsvpHighlight?.tieToFlow === "boolean"
               ? parsed.typography.rsvpHighlight.tieToFlow
               : conditionSpec.typography.rsvpHighlight.tieToFlow,
+          allowBoundaryCrossing:
+            typeof parsed.typography?.rsvpHighlight?.allowBoundaryCrossing ===
+            "boolean"
+              ? parsed.typography.rsvpHighlight.allowBoundaryCrossing
+              : conditionSpec.typography.rsvpHighlight.allowBoundaryCrossing,
         },
       },
       motion: {

@@ -198,6 +198,7 @@ export function ContinuousRsvpRenderer({
       direction,
       unit: rsvpHighlight.unit,
       size: highlightWindowSize,
+      allowBoundaryCrossing: rsvpHighlight.allowBoundaryCrossing,
     });
     highlightLayoutRef.current = layout;
     const nextPositionCount = Math.max(1, layout?.ranges.length ?? 1);
@@ -230,6 +231,7 @@ export function ContinuousRsvpRenderer({
     highlightEnabled,
     highlightWindowSize,
     loopGapPx,
+    rsvpHighlight.allowBoundaryCrossing,
     rsvpHighlight.unit,
     spec,
   ]);

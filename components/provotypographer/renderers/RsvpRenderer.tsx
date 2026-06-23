@@ -46,6 +46,7 @@ export function RsvpRenderer({
   const highlightUnit = rsvpHighlight.unit;
   const highlightSize = rsvpHighlight.size;
   const highlightStyle = rsvpHighlight.style;
+  const allowBoundaryCrossing = rsvpHighlight.allowBoundaryCrossing;
   const { left, center, right } = highlightEnabled
     ? { left: "", center: "", right: "" }
     : splitAroundCenterCharacter(token);
@@ -99,6 +100,7 @@ export function RsvpRenderer({
                     unit={highlightUnit}
                     size={highlightSize}
                     style={highlightStyle}
+                    allowBoundaryCrossing={allowBoundaryCrossing}
                     jumpRateHz={jumpRateHz}
                     jumpDurationMs={jumpDurationMs}
                     preserveWhitespace
@@ -117,6 +119,7 @@ export function RsvpRenderer({
                   unit={highlightUnit}
                   size={highlightSize}
                   style={highlightStyle}
+                  allowBoundaryCrossing={allowBoundaryCrossing}
                   jumpRateHz={jumpRateHz}
                   jumpDurationMs={jumpDurationMs}
                 />

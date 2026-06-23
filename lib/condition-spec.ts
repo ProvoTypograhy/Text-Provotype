@@ -37,6 +37,7 @@ export type ConditionSpec = {
       mode: "jump";
       jumpRateHz: number;
       tieToFlow: boolean;
+      allowBoundaryCrossing: boolean;
     };
     variableAxes?: Record<string, number>;
   };
@@ -97,6 +98,7 @@ export const conditionSpec: ConditionSpec = {
       mode: "jump",
       jumpRateHz: 4,
       tieToFlow: true,
+      allowBoundaryCrossing: false,
     },
     variableAxes: { wght: 450, wdth: 100, opsz: 36 },
   },

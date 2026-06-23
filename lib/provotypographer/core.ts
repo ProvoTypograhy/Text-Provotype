@@ -331,6 +331,7 @@ export function getHighlightSegments(
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
   size: number,
   jumpIndex?: number,
+  allowBoundaryCrossing = false,
 ): {
   before: string;
   highlight: string;
@@ -367,6 +368,26 @@ export function getHighlightSegments(
     return { before: "", highlight: "", after: "" };
   }
 
+  const getSentenceSpans = () => {
+    const sentenceMatches = Array.from(value.matchAll(SENTENCE_REGEX));
+    return sentenceMatches.length
+      ? sentenceMatches.map((match) => ({
+          start: match.index ?? 0,
+          end: (match.index ?? 0) + match[0].length,
+        }))
+      : [{ start: 0, end: value.length }];
+  };
+
+  const findSentenceSpan = (start: number, end: number) => {
+    const spans = getSentenceSpans();
+    return (
+      spans.find((span) => start >= span.start && end <= span.end) ??
+      spans.find((span) => start >= span.start && start < span.end) ??
+      spans[spans.length - 1] ??
+      { start: 0, end: value.length }
+    );
+  };
+
   if (unit === "word") {
     const wordMatches = Array.from(value.matchAll(/\S+/g));
     if (!wordMatches.length) {
@@ -374,16 +395,68 @@ export function getHighlightSegments(
     }
     const clampedSize = Math.max(1, Math.min(size, wordMatches.length));
     const maxStartWordIndex = Math.max(0, wordMatches.length - clampedSize);
-    const startWordIndex =
+    let startWordIndex =
       jumpIndex == null
         ? Math.max(0, Math.floor((wordMatches.length - clampedSize) / 2))
-        : clamp(jumpIndex, 0, maxStartWordIndex);
-    const endWordIndex = startWordIndex + clampedSize - 1;
+        : clamp(
+            jumpIndex,
+            0,
+            allowBoundaryCrossing
+              ? maxStartWordIndex
+              : Math.max(0, wordMatches.length - 1),
+          );
+
+    let sentenceWordMatches = wordMatches;
+    if (!allowBoundaryCrossing) {
+      const currentMatch = wordMatches[startWordIndex];
+      const currentStart = currentMatch?.index ?? 0;
+      const currentEnd = currentStart + (currentMatch?.[0].length ?? 0);
+      const sentenceSpan = findSentenceSpan(currentStart, currentEnd);
+      const sentenceStartWordIndex = wordMatches.findIndex((match) => {
+        const matchStart = match.index ?? 0;
+        const matchEnd = matchStart + match[0].length;
+        return matchStart >= sentenceSpan.start && matchEnd <= sentenceSpan.end;
+      });
+      const sentenceEndWordIndex =
+        wordMatches.length -
+        1 -
+        [...wordMatches]
+          .reverse()
+          .findIndex((match) => {
+            const matchStart = match.index ?? 0;
+            const matchEnd = matchStart + match[0].length;
+            return matchStart >= sentenceSpan.start && matchEnd <= sentenceSpan.end;
+          });
+      if (sentenceStartWordIndex >= 0 && sentenceEndWordIndex >= sentenceStartWordIndex) {
+        const sentenceWordCount =
+          sentenceEndWordIndex - sentenceStartWordIndex + 1;
+        const sentenceWindowSize = Math.min(clampedSize, sentenceWordCount);
+        startWordIndex = clamp(
+          startWordIndex,
+          sentenceStartWordIndex,
+          sentenceEndWordIndex - sentenceWindowSize + 1,
+        );
+        sentenceWordMatches = wordMatches.slice(
+          sentenceStartWordIndex,
+          sentenceEndWordIndex + 1,
+        );
+      }
+    }
+
+    const endWordIndex =
+      startWordIndex +
+      Math.min(clampedSize, sentenceWordMatches.length) -
+      1;
     const startMatch = wordMatches[startWordIndex];
     const endMatch = wordMatches[endWordIndex];
     const startIndex = startMatch?.index ?? 0;
-    const endIndex =
+    let endIndex =
       (endMatch?.index ?? 0) + (endMatch?.[0].length ?? 0);
+    if (!allowBoundaryCrossing) {
+      while (endIndex > startIndex && /[.!?]["'”’)\]]*$/u.test(value.slice(startIndex, endIndex))) {
+        endIndex -= 1;
+      }
+    }
     return normalizeSegments({
       before: value.slice(0, startIndex),
       highlight: value.slice(startIndex, endIndex),
@@ -444,15 +517,49 @@ export function getHighlightSegments(
 
   const chars = Array.from(value);
   const clampedSize = Math.max(1, Math.min(size, chars.length));
-  const maxStartIndex = Math.max(0, chars.length - clampedSize);
-  const startIndex =
+  let maxStartIndex = Math.max(0, chars.length - clampedSize);
+  let startIndex =
     jumpIndex == null
       ? Math.max(0, Math.floor((chars.length - clampedSize) / 2))
-      : clamp(jumpIndex, 0, maxStartIndex);
+      : clamp(
+          jumpIndex,
+          0,
+          allowBoundaryCrossing ? maxStartIndex : Math.max(0, chars.length - 1),
+        );
+  let windowSize = clampedSize;
+  if (!allowBoundaryCrossing) {
+    const charOffsets: number[] = [];
+    let runningOffset = 0;
+    chars.forEach((char) => {
+      charOffsets.push(runningOffset);
+      runningOffset += char.length;
+    });
+    const charStart = charOffsets[startIndex] ?? 0;
+    const charEnd =
+      startIndex + 1 < charOffsets.length
+        ? (charOffsets[startIndex + 1] ?? runningOffset)
+        : runningOffset;
+    const sentenceSpan = findSentenceSpan(charStart, charEnd);
+    const sentenceStartIndex = charOffsets.findIndex(
+      (offset) => offset >= sentenceSpan.start,
+    );
+    const sentenceEndIndex =
+      charOffsets.length -
+      1 -
+      [...charOffsets]
+        .reverse()
+        .findIndex((offset) => offset < sentenceSpan.end);
+    if (sentenceStartIndex >= 0 && sentenceEndIndex >= sentenceStartIndex) {
+      const sentenceCharCount = sentenceEndIndex - sentenceStartIndex + 1;
+      windowSize = Math.min(clampedSize, sentenceCharCount);
+      maxStartIndex = sentenceEndIndex - windowSize + 1;
+      startIndex = clamp(startIndex, sentenceStartIndex, maxStartIndex);
+    }
+  }
   return normalizeSegments({
     before: chars.slice(0, startIndex).join(""),
-    highlight: chars.slice(startIndex, startIndex + clampedSize).join(""),
-    after: chars.slice(startIndex + clampedSize).join(""),
+    highlight: chars.slice(startIndex, startIndex + windowSize).join(""),
+    after: chars.slice(startIndex + windowSize).join(""),
   });
 }
 
@@ -460,6 +567,7 @@ export function getHighlightPositionCount(
   value: string,
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
   size: number,
+  allowBoundaryCrossing = false,
 ): number {
   if (!value) {
     return 1;
@@ -469,6 +577,9 @@ export function getHighlightPositionCount(
 
   if (unit === "word") {
     const wordCount = Array.from(value.matchAll(/\S+/g)).length;
+    if (!allowBoundaryCrossing) {
+      return Math.max(1, wordCount);
+    }
     return Math.max(1, wordCount - Math.min(clampedSize, wordCount) + 1);
   }
 
@@ -491,6 +602,9 @@ export function getHighlightPositionCount(
   }
 
   const charCount = Array.from(value).length;
+  if (!allowBoundaryCrossing) {
+    return Math.max(1, charCount);
+  }
   return Math.max(1, charCount - Math.min(clampedSize, charCount) + 1);
 }
 
@@ -498,6 +612,7 @@ export function getHighlightRanges(
   value: string,
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"],
   size: number,
+  allowBoundaryCrossing = false,
 ): Array<{ start: number; end: number }> {
   if (!value) {
     return [{ start: 0, end: 0 }];
@@ -507,21 +622,85 @@ export function getHighlightRanges(
 
   const buildRangesFromMatches = (
     matches: Array<{ index: number; length: number }>,
+    clampToSentences: boolean,
   ) => {
     if (!matches.length) {
       return [{ start: 0, end: value.length }];
     }
     const windowSize = Math.min(clampedSize, matches.length);
+    const sentenceSpans = clampToSentences
+      ? Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+          start: match.index ?? 0,
+          end: (match.index ?? 0) + match[0].length,
+        }))
+      : [];
     const ranges: Array<{ start: number; end: number }> = [];
-    for (let startIndex = 0; startIndex <= matches.length - windowSize; startIndex += 1) {
+    for (
+      let startIndex = 0;
+      startIndex <= (clampToSentences ? matches.length - 1 : matches.length - windowSize);
+      startIndex += 1
+    ) {
       const first = matches[startIndex];
-      const last = matches[startIndex + windowSize - 1];
-      if (!first || !last) {
+      if (!first) {
         continue;
       }
+      let nextStartIndex = startIndex;
+      let nextWindowSize = windowSize;
+      if (clampToSentences) {
+        const currentEnd = first.index + first.length;
+        const sentenceSpan =
+          sentenceSpans.find(
+            (span) => first.index >= span.start && currentEnd <= span.end,
+          ) ??
+          sentenceSpans.find(
+            (span) => first.index >= span.start && first.index < span.end,
+          ) ??
+          sentenceSpans[sentenceSpans.length - 1] ??
+          { start: 0, end: value.length };
+        const sentenceStartIndex = matches.findIndex(
+          (match) =>
+            match.index >= sentenceSpan.start &&
+            match.index + match.length <= sentenceSpan.end,
+        );
+        const sentenceEndIndex =
+          matches.length -
+          1 -
+          [...matches].reverse().findIndex(
+            (match) =>
+              match.index >= sentenceSpan.start &&
+              match.index + match.length <= sentenceSpan.end,
+          );
+        if (
+          sentenceStartIndex < 0 ||
+          sentenceEndIndex < sentenceStartIndex
+        ) {
+          continue;
+        }
+        const sentenceMatchCount = sentenceEndIndex - sentenceStartIndex + 1;
+        nextWindowSize = Math.min(windowSize, sentenceMatchCount);
+        nextStartIndex = clamp(
+          startIndex,
+          sentenceStartIndex,
+          sentenceEndIndex - nextWindowSize + 1,
+        );
+      }
+      const startMatch = matches[nextStartIndex];
+      const last = matches[nextStartIndex + nextWindowSize - 1];
+      if (!startMatch || !last) {
+        continue;
+      }
+      let end = last.index + last.length;
+      if (clampToSentences) {
+        while (
+          end > startMatch.index &&
+          /[.!?]["'”’)\]]*$/u.test(value.slice(startMatch.index, end))
+        ) {
+          end -= 1;
+        }
+      }
       ranges.push({
-        start: first.index,
-        end: last.index + last.length,
+        start: startMatch.index,
+        end,
       });
     }
     return ranges.length ? ranges : [{ start: 0, end: value.length }];
@@ -533,6 +712,7 @@ export function getHighlightRanges(
         index: match.index ?? 0,
         length: match[0].length,
       })),
+      !allowBoundaryCrossing,
     );
   }
 
@@ -542,6 +722,7 @@ export function getHighlightRanges(
         index: match.index ?? 0,
         length: match[0].length,
       })),
+      false,
     );
   }
 
@@ -553,6 +734,7 @@ export function getHighlightRanges(
           index: match.index ?? 0,
           length: match[0].length,
         })),
+      false,
     );
   }
 
@@ -567,12 +749,59 @@ export function getHighlightRanges(
     runningOffset += char.length;
   });
   const windowSize = Math.min(clampedSize, chars.length);
+  const sentenceSpans = allowBoundaryCrossing
+    ? []
+    : Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+      }));
   const ranges: Array<{ start: number; end: number }> = [];
-  for (let startIndex = 0; startIndex <= chars.length - windowSize; startIndex += 1) {
-    const start = charOffsets[startIndex] ?? 0;
+  for (
+    let startIndex = 0;
+    startIndex <= (allowBoundaryCrossing ? chars.length - windowSize : chars.length - 1);
+    startIndex += 1
+  ) {
+    let nextStartIndex = startIndex;
+    let nextWindowSize = windowSize;
+    if (!allowBoundaryCrossing) {
+      const charStart = charOffsets[startIndex] ?? 0;
+      const charEnd =
+        startIndex + 1 < charOffsets.length
+          ? (charOffsets[startIndex + 1] ?? runningOffset)
+          : runningOffset;
+      const sentenceSpan =
+        sentenceSpans.find(
+          (span) => charStart >= span.start && charEnd <= span.end,
+        ) ??
+        sentenceSpans.find(
+          (span) => charStart >= span.start && charStart < span.end,
+        ) ??
+        sentenceSpans[sentenceSpans.length - 1] ??
+        { start: 0, end: value.length };
+      const sentenceStartIndex = charOffsets.findIndex(
+        (offset) => offset >= sentenceSpan.start,
+      );
+      const sentenceEndIndex =
+        charOffsets.length -
+        1 -
+        [...charOffsets].reverse().findIndex(
+          (offset) => offset < sentenceSpan.end,
+        );
+      if (sentenceStartIndex < 0 || sentenceEndIndex < sentenceStartIndex) {
+        continue;
+      }
+      const sentenceCharCount = sentenceEndIndex - sentenceStartIndex + 1;
+      nextWindowSize = Math.min(windowSize, sentenceCharCount);
+      nextStartIndex = clamp(
+        startIndex,
+        sentenceStartIndex,
+        sentenceEndIndex - nextWindowSize + 1,
+      );
+    }
+    const start = charOffsets[nextStartIndex] ?? 0;
     const end =
-      startIndex + windowSize < charOffsets.length
-        ? (charOffsets[startIndex + windowSize] ?? runningOffset)
+      nextStartIndex + nextWindowSize < charOffsets.length
+        ? (charOffsets[nextStartIndex + nextWindowSize] ?? runningOffset)
         : runningOffset;
     ranges.push({ start, end });
   }
@@ -741,18 +970,20 @@ export function buildContinuousHighlightLayout({
   direction,
   unit,
   size,
+  allowBoundaryCrossing,
 }: {
   container: HTMLElement;
   direction: ConditionSpec["motion"]["direction"];
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
   size: number;
+  allowBoundaryCrossing: boolean;
 }): ContinuousHighlightLayout | null {
   const { text, entries } = collectReadableTextNodes(container);
   if (!text || !entries.length) {
     return null;
   }
 
-  const ranges = getHighlightRanges(text, unit, size);
+  const ranges = getHighlightRanges(text, unit, size, allowBoundaryCrossing);
   if (!ranges.length) {
     return null;
   }

@@ -12,6 +12,7 @@ export function HighlightedToken({
   unit,
   size,
   style,
+  allowBoundaryCrossing,
   preserveWhitespace = false,
   jumpIndex,
 }: {
@@ -19,6 +20,7 @@ export function HighlightedToken({
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
   size: number;
   style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
+  allowBoundaryCrossing: boolean;
   preserveWhitespace?: boolean;
   jumpIndex?: number;
 }) {
@@ -27,6 +29,7 @@ export function HighlightedToken({
     unit,
     size,
     jumpIndex,
+    allowBoundaryCrossing,
   );
   const highlightStyle = getHighlightSpanStyle(style);
   return (
@@ -43,6 +46,7 @@ export function AnimatedHighlightedToken({
   unit,
   size,
   style,
+  allowBoundaryCrossing,
   jumpRateHz,
   jumpDurationMs,
   preserveWhitespace = false,
@@ -51,12 +55,18 @@ export function AnimatedHighlightedToken({
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
   size: number;
   style: ConditionSpec["typography"]["rsvpHighlight"]["style"];
+  allowBoundaryCrossing: boolean;
   jumpRateHz: number;
   jumpDurationMs?: number;
   preserveWhitespace?: boolean;
 }) {
   const [jumpIndex, setJumpIndex] = useState(0);
-  const positionCount = getHighlightPositionCount(token, unit, size);
+  const positionCount = getHighlightPositionCount(
+    token,
+    unit,
+    size,
+    allowBoundaryCrossing,
+  );
 
   useEffect(() => {
     if (positionCount <= 1) {
@@ -106,6 +116,7 @@ export function AnimatedHighlightedToken({
       unit={unit}
       size={size}
       style={style}
+      allowBoundaryCrossing={allowBoundaryCrossing}
       preserveWhitespace={preserveWhitespace}
       jumpIndex={jumpIndex}
     />

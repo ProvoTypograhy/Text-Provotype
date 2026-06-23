@@ -757,6 +757,29 @@ export function SettingsPanel({
                                   <option value="outline">outline</option>
                                 </select>
                               </label>
+                              <label className="flex items-center gap-2 self-end">
+                                <input
+                                  type="checkbox"
+                                  disabled={!rsvpHighlight.enabled}
+                                  checked={rsvpHighlight.allowBoundaryCrossing}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      typography: {
+                                        ...prev.typography,
+                                        rsvpHighlight: {
+                                          ...(
+                                            prev.typography.rsvpHighlight ??
+                                            conditionSpec.typography.rsvpHighlight
+                                          ),
+                                          allowBoundaryCrossing: e.target.checked,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                />
+                                <span>Allow sentence-boundary highlight</span>
+                              </label>
                             </div>
                             {spec.mode === "continuous" ? (
                               <div className="flex flex-wrap items-center gap-3">
