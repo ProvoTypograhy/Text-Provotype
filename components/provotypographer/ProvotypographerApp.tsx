@@ -30,6 +30,8 @@ import {
   encodeSharePayload,
   endsWithPausePunctuation,
   getAdvanceCharacterCount,
+  getHighlightPositionCount,
+  getHighlightSegments,
   getRsvpDisplayToken,
   getStepIndex,
   getTokenizationFromViewportStep,
@@ -53,6 +55,19 @@ import { SettingsJsonModal } from "./settings/SettingsJsonModal";
 const LOOP_EXPORT_DURATION_SECONDS_DEFAULT = 5;
 const LOOP_EXPORT_DURATION_SECONDS_MIN = 1;
 const LOOP_EXPORT_DURATION_SECONDS_MAX = 60;
+const READ_ALOUD_BASELINE_CPS = 14;
+const READ_ALOUD_TIMING_BUFFER = 0.82;
+
+function getReadAloudRate(value: string, availableMs?: number) {
+  if (availableMs == null || availableMs <= 0) {
+    return 1;
+  }
+
+  const normalizedLength = Math.max(1, value.replace(/\s+/g, " ").trim().length);
+  const availableSeconds = Math.max(0.05, (availableMs / 1000) * READ_ALOUD_TIMING_BUFFER);
+  const targetCps = normalizedLength / availableSeconds;
+  return clamp(targetCps / READ_ALOUD_BASELINE_CPS, 0.1, 10);
+}
 
 function waitForPaintFrames(count = 2) {
   return new Promise<void>((resolve) => {
@@ -98,6 +113,7 @@ export function ProvotypographerApp() {
   const [loopExportStatus, setLoopExportStatus] = useState("");
   const [isLoopExporting, setIsLoopExporting] = useState(false);
   const [isLoopCaptureActive, setIsLoopCaptureActive] = useState(false);
+  const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [loopExportDurationSeconds, setLoopExportDurationSeconds] = useState(
     String(LOOP_EXPORT_DURATION_SECONDS_DEFAULT),
   );
@@ -112,6 +128,7 @@ export function ProvotypographerApp() {
   const exportViewportRef = useRef<HTMLDivElement | null>(null);
   const loopCaptureRepaintRef = useRef<HTMLDivElement | null>(null);
   const loopCaptureRepaintFrameRef = useRef<number | null>(null);
+  const readAloudTimeoutsRef = useRef<number[]>([]);
   const viewportResizeStartRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -148,6 +165,47 @@ export function ProvotypographerApp() {
     logsRef.current = next.length > 200 ? next.slice(next.length - 200) : next;
   }, []);
 
+  const clearReadAloudSchedule = useCallback((cancelSpeech = true) => {
+    readAloudTimeoutsRef.current.forEach((timeoutId) =>
+      window.clearTimeout(timeoutId),
+    );
+    readAloudTimeoutsRef.current = [];
+
+    if (
+      cancelSpeech &&
+      typeof window !== "undefined" &&
+      "speechSynthesis" in window
+    ) {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
+
+  const speakReadAloudText = useCallback((value: string, availableMs?: number) => {
+    if (
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window) ||
+      typeof SpeechSynthesisUtterance === "undefined"
+    ) {
+      return;
+    }
+
+    const normalizedValue = value.replace(/\s+/g, " ").trim();
+    if (!normalizedValue) {
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(normalizedValue);
+    const selectedVoice = window.speechSynthesis
+      .getVoices()
+      .find((voice) => voice.voiceURI === spec.motion.readAloud.voiceURI);
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+    }
+    utterance.rate = getReadAloudRate(normalizedValue, availableMs);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [spec.motion.readAloud.voiceURI]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -170,6 +228,24 @@ export function ProvotypographerApp() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window)
+    ) {
+      return;
+    }
+
+    const loadVoices = () => {
+      setSpeechVoices(window.speechSynthesis.getVoices());
+    };
+
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+    return () =>
+      window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
   }, []);
 
   // rsvp size comes from viewport step
@@ -260,6 +336,81 @@ export function ProvotypographerApp() {
   );
   const canManualAdvance =
     spec.mode === "rsvp" && !spec.motion.autoplay && rsvpTokens.length > 0;
+
+  useEffect(() => {
+    clearReadAloudSchedule();
+
+    if (
+      !spec.motion.readAloud.enabled ||
+      spec.mode !== "rsvp" ||
+      !spec.motion.autoplay ||
+      !currentRsvpToken
+    ) {
+      return;
+    }
+
+    if (
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window) ||
+      typeof SpeechSynthesisUtterance === "undefined"
+    ) {
+      return;
+    }
+
+    if (!rsvpHighlight.enabled) {
+      speakReadAloudText(currentRsvpToken, currentRsvpTokenDurationMs);
+      return () => clearReadAloudSchedule();
+    }
+
+    const positionCount = getHighlightPositionCount(
+      currentRsvpToken,
+      rsvpHighlight.unit,
+      rsvpHighlight.size,
+      rsvpHighlight.allowBoundaryCrossing,
+    );
+    const fallbackStepMs = Math.max(
+      50,
+      Math.round(1000 / effectiveHighlightJumpRateHz),
+    );
+    const readAloudSegments = Array.from({ length: positionCount }, (_, jumpIndex) => {
+      const { highlight } = getHighlightSegments(
+        currentRsvpToken,
+        rsvpHighlight.unit,
+        rsvpHighlight.size,
+        jumpIndex,
+        rsvpHighlight.allowBoundaryCrossing,
+      );
+      return (highlight || currentRsvpToken).replace(/\s+/g, " ").trim();
+    }).filter((segment, index, segments) => {
+      return segment && segment !== segments[index - 1];
+    });
+    const stepMs =
+      currentRsvpTokenDurationMs != null && readAloudSegments.length > 0
+        ? Math.max(50, currentRsvpTokenDurationMs / readAloudSegments.length)
+        : fallbackStepMs;
+
+    readAloudSegments.forEach((segment, index) => {
+      const timeoutId = window.setTimeout(() => {
+        speakReadAloudText(segment, stepMs);
+      }, Math.round(index * stepMs));
+      readAloudTimeoutsRef.current.push(timeoutId);
+    });
+
+    return () => clearReadAloudSchedule();
+  }, [
+    clearReadAloudSchedule,
+    currentRsvpToken,
+    currentRsvpTokenDurationMs,
+    effectiveHighlightJumpRateHz,
+    rsvpHighlight.allowBoundaryCrossing,
+    rsvpHighlight.enabled,
+    rsvpHighlight.size,
+    rsvpHighlight.unit,
+    speakReadAloudText,
+    spec.mode,
+    spec.motion.autoplay,
+    spec.motion.readAloud.enabled,
+  ]);
 
   useEffect(() => {
     if (highlightStep === currentHighlightStep) {
@@ -689,11 +840,7 @@ export function ProvotypographerApp() {
       anchor.click();
       document.body.removeChild(anchor);
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      setLoopExportStatus(
-        result.extension === "mp4"
-          ? "Exact MP4 viewport loop downloaded."
-          : "Exact WebM viewport loop downloaded. MP4 was not available in this browser.",
-      );
+      setLoopExportStatus("");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to export loop.";
@@ -805,6 +952,7 @@ export function ProvotypographerApp() {
       motion?: Omit<Partial<ConditionSpec["motion"]>, "speed"> & {
         speed?: { unit?: string; value?: number };
         rateControl?: Partial<ConditionSpec["motion"]["rateControl"]>;
+        readAloud?: Partial<ConditionSpec["motion"]["readAloud"]>;
       };
     };
 
@@ -998,6 +1146,18 @@ export function ProvotypographerApp() {
         pauseAtPunctuation: {
           ...conditionSpec.motion.pauseAtPunctuation,
           ...parsed.motion?.pauseAtPunctuation,
+        },
+        readAloud: {
+          ...conditionSpec.motion.readAloud,
+          ...parsed.motion?.readAloud,
+          enabled:
+            typeof parsed.motion?.readAloud?.enabled === "boolean"
+              ? parsed.motion.readAloud.enabled
+              : conditionSpec.motion.readAloud.enabled,
+          voiceURI:
+            typeof parsed.motion?.readAloud?.voiceURI === "string"
+              ? parsed.motion.readAloud.voiceURI
+              : conditionSpec.motion.readAloud.voiceURI,
         },
         rateControl: {
           ...conditionSpec.motion.rateControl,
@@ -1411,6 +1571,7 @@ export function ProvotypographerApp() {
                   safeRsvpIndex={safeRsvpIndex}
                   rsvpTokens={rsvpTokens}
                   canManualAdvance={canManualAdvance}
+                  speechVoices={speechVoices}
                   setResetContinuousHighlightKey={setResetContinuousHighlightKey}
                   rsvpHighlight={rsvpHighlight}
                   effectiveHighlightJumpRateHz={effectiveHighlightJumpRateHz}

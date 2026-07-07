@@ -37,6 +37,7 @@ type SettingsPanelProps = {
   safeRsvpIndex: number;
   rsvpTokens: string[];
   canManualAdvance: boolean;
+  speechVoices: SpeechSynthesisVoice[];
   setResetContinuousHighlightKey: Dispatch<SetStateAction<number>>;
   rsvpHighlight: ConditionSpec["typography"]["rsvpHighlight"];
   effectiveHighlightJumpRateHz: number;
@@ -67,6 +68,7 @@ export function SettingsPanel({
   safeRsvpIndex,
   rsvpTokens,
   canManualAdvance,
+  speechVoices,
   setResetContinuousHighlightKey,
   rsvpHighlight,
   effectiveHighlightJumpRateHz,
@@ -345,6 +347,56 @@ export function SettingsPanel({
                                   }
                                 />
                                 Pause at punctuation
+                              </label>
+                              <label className="flex items-center gap-2 pt-6">
+                                <input
+                                  type="checkbox"
+                                  checked={spec.motion.readAloud.enabled}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        readAloud: {
+                                          ...prev.motion.readAloud,
+                                          enabled: e.target.checked,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                />
+                                Read words aloud
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                Read-Aloud Voice
+                                <select
+                                  className="rounded border border-zinc-300 px-2 py-1"
+                                  disabled={!spec.motion.readAloud.enabled}
+                                  value={spec.motion.readAloud.voiceURI}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        readAloud: {
+                                          ...prev.motion.readAloud,
+                                          voiceURI: e.target.value,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                >
+                                  <option value="">System default</option>
+                                  {speechVoices.map((voice) => (
+                                    <option
+                                      key={`${voice.voiceURI}-${voice.lang}`}
+                                      value={voice.voiceURI}
+                                    >
+                                      {voice.name} ({voice.lang})
+                                      {voice.default ? " default" : ""}
+                                    </option>
+                                  ))}
+                                </select>
                               </label>
                               <label className="flex flex-col gap-1">
                                 Punctuation Delay (ms):{" "}

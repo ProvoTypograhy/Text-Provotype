@@ -56,6 +56,7 @@ export type ConditionSpec = {
     wrapVerticalText: boolean;
     progression: "continuous" | "step";
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
+    readAloud: { enabled: boolean; voiceURI: string };
   };
 };
 
@@ -117,6 +118,7 @@ export const conditionSpec: ConditionSpec = {
     wrapVerticalText: true,
     progression: "step",
     pauseAtPunctuation: { enabled: false, delayMs: 250 },
+    readAloud: { enabled: false, voiceURI: "" },
   },
 };
 
