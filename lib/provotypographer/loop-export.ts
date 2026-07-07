@@ -13,7 +13,9 @@ export type LoopExportOptions = {
   fps?: number;
   maxDimensionPx?: number;
   onProgress?: (progress: { elapsedMs: number; durationMs: number }) => void;
+  onBeforeCapture?: () => Promise<void> | void;
   onCaptureReady?: () => Promise<void> | void;
+  expectMotion?: boolean;
 };
 
 type MimeCandidate = {
@@ -27,6 +29,13 @@ type CropTargetConstructor = {
 
 type BrowserCaptureTrack = MediaStreamTrack & {
   cropTo?: (cropTarget: unknown) => Promise<void>;
+};
+
+type VideoWithFrameCallback = HTMLVideoElement & {
+  requestVideoFrameCallback?: (
+    callback: (now: number, metadata: unknown) => void,
+  ) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
 };
 
 const MIME_CANDIDATES: MimeCandidate[] = [
@@ -56,6 +65,7 @@ function getDisplayMediaOptions(fps: number): DisplayMediaStreamOptions {
     video: {
       frameRate: { ideal: fps },
       displaySurface: "browser",
+      cursor: "never",
     },
     audio: false,
     preferCurrentTab: true,
@@ -145,6 +155,183 @@ function waitForAnimationFrame() {
   });
 }
 
+async function waitForPaintFrames(count = 2) {
+  for (let index = 0; index < count; index += 1) {
+    await waitForAnimationFrame();
+  }
+}
+
+function waitForCapturedVideoFrame(video: HTMLVideoElement, timeoutMs = 5000) {
+  const videoWithFrameCallback = video as VideoWithFrameCallback;
+  if (!videoWithFrameCallback.requestVideoFrameCallback) {
+    return waitForPaintFrames(2);
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while waiting for the captured viewport frame."));
+    }, timeoutMs);
+    let frameCallbackId: number | null = null;
+
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      if (
+        frameCallbackId != null &&
+        videoWithFrameCallback.cancelVideoFrameCallback
+      ) {
+        videoWithFrameCallback.cancelVideoFrameCallback(frameCallbackId);
+      }
+    };
+
+    frameCallbackId = videoWithFrameCallback.requestVideoFrameCallback(() => {
+      cleanup();
+      resolve();
+    });
+  });
+}
+
+function waitForRecordedVideoPlayable(blob: Blob) {
+  return new Promise<void>((resolve, reject) => {
+    if (blob.size === 0) {
+      reject(new Error("Recorded video was empty."));
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Recorded video was not playable."));
+    }, 5000);
+
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      video.pause();
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      video.removeEventListener("playing", handlePlayable);
+      video.removeEventListener("timeupdate", handlePlayable);
+      video.removeEventListener("error", handleError);
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+    };
+
+    const handlePlayable = () => {
+      cleanup();
+      resolve();
+    };
+    const handleLoadedMetadata = () => {
+      if (!video.videoWidth || !video.videoHeight) {
+        cleanup();
+        reject(new Error("Recorded video had no visible frames."));
+        return;
+      }
+
+      void video.play().catch((error: unknown) => {
+        cleanup();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Recorded video could not be played."),
+        );
+      });
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("Recorded video could not be loaded."));
+    };
+
+    video.addEventListener("loadedmetadata", handleLoadedMetadata);
+    video.addEventListener("playing", handlePlayable);
+    video.addEventListener("timeupdate", handlePlayable);
+    video.addEventListener("error", handleError);
+    video.src = url;
+    video.load();
+  });
+}
+
+function readVideoFrame(video: HTMLVideoElement) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) {
+    throw new Error("Captured viewport had no visible frames.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("Could not inspect captured viewport frames.");
+  }
+
+  context.drawImage(video, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height).data;
+}
+
+function framesDiffer(
+  firstFrame: Uint8ClampedArray,
+  nextFrame: Uint8ClampedArray,
+) {
+  if (firstFrame.length !== nextFrame.length) {
+    return true;
+  }
+
+  const sentinelPixelDelta =
+    Math.abs(firstFrame[0] - nextFrame[0]) +
+    Math.abs(firstFrame[1] - nextFrame[1]) +
+    Math.abs(firstFrame[2] - nextFrame[2]);
+  if (sentinelPixelDelta >= 2) {
+    return true;
+  }
+
+  let changedPixels = 0;
+  let totalDelta = 0;
+  for (let index = 0; index < firstFrame.length; index += 4) {
+    const pixelDelta =
+      Math.abs(firstFrame[index] - nextFrame[index]) +
+      Math.abs(firstFrame[index + 1] - nextFrame[index + 1]) +
+      Math.abs(firstFrame[index + 2] - nextFrame[index + 2]);
+    if (pixelDelta > 0) {
+      changedPixels += 1;
+      totalDelta += pixelDelta;
+    }
+    if (changedPixels >= 64 && totalDelta >= 1024) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getStaticCaptureError() {
+  return new Error(
+    "Captured viewport stayed static; export was canceled to avoid downloading a frozen autoplay loop.",
+  );
+}
+
+async function validateCapturedMotion(video: HTMLVideoElement) {
+  const firstFrame = readVideoFrame(video);
+
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      await waitForCapturedVideoFrame(video, 1000);
+      if (framesDiffer(firstFrame, readVideoFrame(video))) {
+        return;
+      }
+    }
+  } catch {
+    throw getStaticCaptureError();
+  }
+
+  throw getStaticCaptureError();
+}
+
 async function recordStream({
   stream,
   mimeCandidate,
@@ -169,15 +356,20 @@ async function recordStream({
   const stopPromise = waitForRecorderStop(recorder);
   recorder.start(1000);
   const startedAt = performance.now();
+  let lastProgressAt = startedAt - 250;
   let elapsedMs = 0;
 
   while (elapsedMs < durationMs) {
     await waitForAnimationFrame();
-    elapsedMs = performance.now() - startedAt;
-    onProgress?.({
-      elapsedMs: Math.min(elapsedMs, durationMs),
-      durationMs,
-    });
+    const now = performance.now();
+    elapsedMs = now - startedAt;
+    if (now - lastProgressAt >= 250 || elapsedMs >= durationMs) {
+      lastProgressAt = now;
+      onProgress?.({
+        elapsedMs: Math.min(elapsedMs, durationMs),
+        durationMs,
+      });
+    }
   }
 
   if (recorder.state === "recording") {
@@ -195,7 +387,9 @@ export async function exportViewportLoop(
     durationMs = 5000,
     fps = 30,
     onProgress,
+    onBeforeCapture,
     onCaptureReady,
+    expectMotion = false,
   }: LoopExportOptions = {},
 ): Promise<LoopExportResult> {
   if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -206,6 +400,8 @@ export async function exportViewportLoop(
   if (!supportedMimeTypes.length) {
     throw new Error("This browser does not support video recording.");
   }
+
+  await onBeforeCapture?.();
 
   let displayStream: MediaStream;
   try {
@@ -229,7 +425,17 @@ export async function exportViewportLoop(
     await waitForVideoReady(video);
     await video.play();
     await onCaptureReady?.();
-    await waitForAnimationFrame();
+    try {
+      await waitForCapturedVideoFrame(video);
+    } catch (error) {
+      if (expectMotion) {
+        throw getStaticCaptureError();
+      }
+      throw error;
+    }
+    if (expectMotion) {
+      await validateCapturedMotion(video);
+    }
 
     for (const supportedMimeType of supportedMimeTypes) {
       const blob = await recordStream({
@@ -239,15 +445,16 @@ export async function exportViewportLoop(
         onProgress,
       });
 
-      if (blob.size > 0) {
+      try {
+        await waitForRecordedVideoPlayable(blob);
         return {
           blob,
           extension: supportedMimeType.extension,
           mimeType: supportedMimeType.mimeType,
         };
+      } catch {
+        failedMimeTypes.add(supportedMimeType.mimeType);
       }
-
-      failedMimeTypes.add(supportedMimeType.mimeType);
     }
   } finally {
     displayStream.getTracks().forEach((track) => track.stop());

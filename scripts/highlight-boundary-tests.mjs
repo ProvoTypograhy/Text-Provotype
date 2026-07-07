@@ -24,6 +24,8 @@ registerHooks({
 });
 
 const {
+  findHighlightRangeIndexForOffset,
+  findTextPosition,
   getHighlightRanges,
   getHighlightSegments,
 } = await import("../lib/provotypographer/core.ts");
@@ -50,6 +52,88 @@ assert.deepEqual(
   getHighlightRanges("One. Two.", "sentence", 2, false),
   [{ start: 0, end: 9 }],
   "sentence highlight ranges should be unchanged by boundary clamping",
+);
+
+assert.deepEqual(
+  getHighlightRanges("One two three. Four five six.", "word", 2, false),
+  [
+    { start: 0, end: 7 },
+    { start: 4, end: 13 },
+    { start: 15, end: 24 },
+    { start: 20, end: 28 },
+  ],
+  "word ranges should clamp inside sentences without duplicate tail windows",
+);
+
+assert.deepEqual(
+  getHighlightRanges("One.\n\nTwo three.", "word", 2, false),
+  [
+    { start: 0, end: 3 },
+    { start: 6, end: 15 },
+  ],
+  "word ranges should include the first word after a paragraph break",
+);
+
+assert.deepEqual(
+  getHighlightRanges("One two. Three four.", "word", 2, true),
+  [
+    { start: 0, end: 8 },
+    { start: 4, end: 14 },
+    { start: 9, end: 20 },
+  ],
+  "word ranges should preserve cross-boundary windows when enabled",
+);
+
+assert.equal(
+  findHighlightRangeIndexForOffset(
+    getHighlightRanges("One.\n\nTwo three.", "word", 2, false),
+    6,
+  ),
+  1,
+  "continuous range lookup should resolve to the first range after a paragraph break",
+);
+
+const firstNode = { id: "first" };
+const secondNode = { id: "second" };
+assert.deepEqual(
+  findTextPosition(
+    [
+      { node: firstNode, start: 0, end: 5 },
+      { node: secondNode, start: 5, end: 11 },
+    ],
+    5,
+    "start",
+  ),
+  { node: secondNode, offset: 0 },
+  "range starts at adjacent text-node boundaries should resolve to the next text node",
+);
+assert.deepEqual(
+  findTextPosition(
+    [
+      { node: firstNode, start: 0, end: 5 },
+      { node: secondNode, start: 5, end: 11 },
+    ],
+    5,
+    "end",
+  ),
+  { node: firstNode, offset: 5 },
+  "range ends at adjacent text-node boundaries should resolve to the previous text node",
+);
+
+const longText = Array.from({ length: 1500 }, (_, index) =>
+  `Sentence ${index} has several words for range generation.`,
+).join(" ");
+const startMs = performance.now();
+const longRanges = getHighlightRanges(longText, "word", 3, false);
+const elapsedMs = performance.now() - startMs;
+assert.equal(
+  longRanges.length,
+  1500 * 6,
+  "long sentence-clamped word ranges should not create duplicate tail windows",
+);
+assert.ok(
+  elapsedMs < 1000,
+  `long sentence-clamped word range generation took ${elapsedMs.toFixed(1)}ms`,
 );
 
 console.log("Highlight boundary helper tests passed.");

@@ -20,6 +20,7 @@ export type ContinuousHighlightLayout = {
   container: HTMLElement;
   entries: Array<{ node: Text; start: number; end: number }>;
   ranges: Array<{ start: number; end: number }>;
+  textLength: number;
   contentLength: number;
 };
 export type SettingsJson = ConditionSpec & {
@@ -620,6 +621,28 @@ export function getHighlightRanges(
 
   const clampedSize = Math.max(1, size);
 
+  const pushUniqueRange = (
+    ranges: Array<{ start: number; end: number }>,
+    range: { start: number; end: number },
+  ) => {
+    const previous = ranges[ranges.length - 1];
+    if (previous && previous.start === range.start && previous.end === range.end) {
+      return;
+    }
+    ranges.push(range);
+  };
+
+  const trimSentenceEndPunctuation = (start: number, end: number) => {
+    let nextEnd = end;
+    while (
+      nextEnd > start &&
+      /[.!?]["'”’)\]]*$/u.test(value.slice(start, nextEnd))
+    ) {
+      nextEnd -= 1;
+    }
+    return nextEnd;
+  };
+
   const buildRangesFromMatches = (
     matches: Array<{ index: number; length: number }>,
     clampToSentences: boolean,
@@ -627,82 +650,84 @@ export function getHighlightRanges(
     if (!matches.length) {
       return [{ start: 0, end: value.length }];
     }
-    const windowSize = Math.min(clampedSize, matches.length);
-    const sentenceSpans = clampToSentences
-      ? Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
-          start: match.index ?? 0,
-          end: (match.index ?? 0) + match[0].length,
-        }))
-      : [];
     const ranges: Array<{ start: number; end: number }> = [];
-    for (
-      let startIndex = 0;
-      startIndex <= (clampToSentences ? matches.length - 1 : matches.length - windowSize);
-      startIndex += 1
-    ) {
-      const first = matches[startIndex];
-      if (!first) {
-        continue;
-      }
-      let nextStartIndex = startIndex;
-      let nextWindowSize = windowSize;
-      if (clampToSentences) {
-        const currentEnd = first.index + first.length;
-        const sentenceSpan =
-          sentenceSpans.find(
-            (span) => first.index >= span.start && currentEnd <= span.end,
-          ) ??
-          sentenceSpans.find(
-            (span) => first.index >= span.start && first.index < span.end,
-          ) ??
-          sentenceSpans[sentenceSpans.length - 1] ??
-          { start: 0, end: value.length };
-        const sentenceStartIndex = matches.findIndex(
-          (match) =>
-            match.index >= sentenceSpan.start &&
-            match.index + match.length <= sentenceSpan.end,
-        );
-        const sentenceEndIndex =
-          matches.length -
-          1 -
-          [...matches].reverse().findIndex(
-            (match) =>
-              match.index >= sentenceSpan.start &&
-              match.index + match.length <= sentenceSpan.end,
-          );
-        if (
-          sentenceStartIndex < 0 ||
-          sentenceEndIndex < sentenceStartIndex
-        ) {
+
+    if (!clampToSentences) {
+      const windowSize = Math.min(clampedSize, matches.length);
+      for (let startIndex = 0; startIndex <= matches.length - windowSize; startIndex += 1) {
+        const startMatch = matches[startIndex];
+        const last = matches[startIndex + windowSize - 1];
+        if (!startMatch || !last) {
           continue;
         }
-        const sentenceMatchCount = sentenceEndIndex - sentenceStartIndex + 1;
-        nextWindowSize = Math.min(windowSize, sentenceMatchCount);
-        nextStartIndex = clamp(
+        pushUniqueRange(ranges, {
+          start: startMatch.index,
+          end: last.index + last.length,
+        });
+      }
+      return ranges.length ? ranges : [{ start: 0, end: value.length }];
+    }
+
+    const sentenceSpans = Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+    }));
+    const spans = sentenceSpans.length
+      ? sentenceSpans
+      : [{ start: 0, end: value.length }];
+    let matchCursor = 0;
+
+    spans.forEach((span) => {
+      while (
+        matchCursor < matches.length &&
+        matches[matchCursor].index + matches[matchCursor].length <= span.start
+      ) {
+        matchCursor += 1;
+      }
+
+      const sentenceStartIndex = matchCursor;
+      while (
+        matchCursor < matches.length &&
+        matches[matchCursor].index >= span.start &&
+        matches[matchCursor].index + matches[matchCursor].length <= span.end
+      ) {
+        matchCursor += 1;
+      }
+
+      const sentenceEndIndex = matchCursor - 1;
+      if (sentenceEndIndex < sentenceStartIndex) {
+        return;
+      }
+
+      const sentenceMatchCount = sentenceEndIndex - sentenceStartIndex + 1;
+      const windowSize = Math.min(clampedSize, sentenceMatchCount);
+      const maxStartIndex = sentenceEndIndex - windowSize + 1;
+
+      for (
+        let startIndex = sentenceStartIndex;
+        startIndex <= sentenceEndIndex;
+        startIndex += 1
+      ) {
+        const nextStartIndex = clamp(
           startIndex,
           sentenceStartIndex,
-          sentenceEndIndex - nextWindowSize + 1,
+          maxStartIndex,
         );
-      }
-      const startMatch = matches[nextStartIndex];
-      const last = matches[nextStartIndex + nextWindowSize - 1];
-      if (!startMatch || !last) {
-        continue;
-      }
-      let end = last.index + last.length;
-      if (clampToSentences) {
-        while (
-          end > startMatch.index &&
-          /[.!?]["'”’)\]]*$/u.test(value.slice(startMatch.index, end))
-        ) {
-          end -= 1;
+        const startMatch = matches[nextStartIndex];
+        const last = matches[nextStartIndex + windowSize - 1];
+        if (!startMatch || !last) {
+          continue;
         }
+        pushUniqueRange(ranges, {
+          start: startMatch.index,
+          end: trimSentenceEndPunctuation(
+            startMatch.index,
+            last.index + last.length,
+          ),
+        });
       }
-      ranges.push({
-        start: startMatch.index,
-        end,
-      });
-    }
+    });
+
     return ranges.length ? ranges : [{ start: 0, end: value.length }];
   };
 
@@ -749,63 +774,107 @@ export function getHighlightRanges(
     runningOffset += char.length;
   });
   const windowSize = Math.min(clampedSize, chars.length);
-  const sentenceSpans = allowBoundaryCrossing
-    ? []
-    : Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
-        start: match.index ?? 0,
-        end: (match.index ?? 0) + match[0].length,
-      }));
   const ranges: Array<{ start: number; end: number }> = [];
-  for (
-    let startIndex = 0;
-    startIndex <= (allowBoundaryCrossing ? chars.length - windowSize : chars.length - 1);
-    startIndex += 1
-  ) {
-    let nextStartIndex = startIndex;
-    let nextWindowSize = windowSize;
-    if (!allowBoundaryCrossing) {
-      const charStart = charOffsets[startIndex] ?? 0;
-      const charEnd =
-        startIndex + 1 < charOffsets.length
-          ? (charOffsets[startIndex + 1] ?? runningOffset)
+
+  if (allowBoundaryCrossing) {
+    for (let startIndex = 0; startIndex <= chars.length - windowSize; startIndex += 1) {
+      const start = charOffsets[startIndex] ?? 0;
+      const end =
+        startIndex + windowSize < charOffsets.length
+          ? (charOffsets[startIndex + windowSize] ?? runningOffset)
           : runningOffset;
-      const sentenceSpan =
-        sentenceSpans.find(
-          (span) => charStart >= span.start && charEnd <= span.end,
-        ) ??
-        sentenceSpans.find(
-          (span) => charStart >= span.start && charStart < span.end,
-        ) ??
-        sentenceSpans[sentenceSpans.length - 1] ??
-        { start: 0, end: value.length };
-      const sentenceStartIndex = charOffsets.findIndex(
-        (offset) => offset >= sentenceSpan.start,
-      );
-      const sentenceEndIndex =
-        charOffsets.length -
-        1 -
-        [...charOffsets].reverse().findIndex(
-          (offset) => offset < sentenceSpan.end,
-        );
-      if (sentenceStartIndex < 0 || sentenceEndIndex < sentenceStartIndex) {
-        continue;
-      }
-      const sentenceCharCount = sentenceEndIndex - sentenceStartIndex + 1;
-      nextWindowSize = Math.min(windowSize, sentenceCharCount);
-      nextStartIndex = clamp(
+      pushUniqueRange(ranges, { start, end });
+    }
+    return ranges.length ? ranges : [{ start: 0, end: value.length }];
+  }
+
+  const sentenceSpans = Array.from(value.matchAll(SENTENCE_REGEX)).map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+  const spans = sentenceSpans.length
+    ? sentenceSpans
+    : [{ start: 0, end: value.length }];
+  let charCursor = 0;
+
+  spans.forEach((span) => {
+    while (charCursor < charOffsets.length && charOffsets[charCursor] < span.start) {
+      charCursor += 1;
+    }
+
+    const sentenceStartIndex = charCursor;
+    while (charCursor < charOffsets.length && charOffsets[charCursor] < span.end) {
+      charCursor += 1;
+    }
+
+    const sentenceEndIndex = charCursor - 1;
+    if (sentenceEndIndex < sentenceStartIndex) {
+      return;
+    }
+
+    const sentenceCharCount = sentenceEndIndex - sentenceStartIndex + 1;
+    const sentenceWindowSize = Math.min(windowSize, sentenceCharCount);
+    const maxStartIndex = sentenceEndIndex - sentenceWindowSize + 1;
+
+    for (
+      let startIndex = sentenceStartIndex;
+      startIndex <= sentenceEndIndex;
+      startIndex += 1
+    ) {
+      const nextStartIndex = clamp(
         startIndex,
         sentenceStartIndex,
-        sentenceEndIndex - nextWindowSize + 1,
+        maxStartIndex,
       );
+      const start = charOffsets[nextStartIndex] ?? 0;
+      const end =
+        nextStartIndex + sentenceWindowSize < charOffsets.length
+          ? (charOffsets[nextStartIndex + sentenceWindowSize] ?? runningOffset)
+          : runningOffset;
+      pushUniqueRange(ranges, { start, end });
     }
-    const start = charOffsets[nextStartIndex] ?? 0;
-    const end =
-      nextStartIndex + nextWindowSize < charOffsets.length
-        ? (charOffsets[nextStartIndex + nextWindowSize] ?? runningOffset)
-        : runningOffset;
-    ranges.push({ start, end });
-  }
+  });
+
   return ranges.length ? ranges : [{ start: 0, end: value.length }];
+}
+
+export function findHighlightRangeIndexForOffset(
+  ranges: Array<{ start: number; end: number }>,
+  offset: number,
+): number {
+  if (!ranges.length) {
+    return 0;
+  }
+
+  let low = 0;
+  let high = ranges.length - 1;
+  let best = 0;
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const range = ranges[middle];
+    if (!range) {
+      break;
+    }
+    if (range.start <= offset) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  const current = ranges[best];
+  const next = ranges[best + 1];
+  if (current && next && offset > current.end) {
+    const currentDistance = Math.abs(offset - current.end);
+    const nextDistance = Math.abs(next.start - offset);
+    if (nextDistance < currentDistance) {
+      return best + 1;
+    }
+  }
+
+  return best;
 }
 
 export function getHighlightSpanStyle(
@@ -896,32 +965,24 @@ export function collectReadableTextNodes(root: HTMLElement) {
 export function findTextPosition(
   entries: Array<{ node: Text; start: number; end: number }>,
   offset: number,
+  bias: "start" | "end",
 ) {
   if (!entries.length) {
     return null;
   }
 
   const clampedOffset = clamp(offset, 0, entries[entries.length - 1]?.end ?? 0);
-  const exactEndEntry = entries.find(
-    (entry) => clampedOffset === entry.end && entry.end > entry.start,
-  );
-  if (exactEndEntry) {
-    return {
-      node: exactEndEntry.node,
-      offset: exactEndEntry.end - exactEndEntry.start,
-    };
-  }
-
-  const entry = entries.find(
-    (candidate) =>
-      clampedOffset >= candidate.start && clampedOffset < candidate.end,
+  const entry = entries.find((candidate) =>
+    bias === "start"
+      ? clampedOffset >= candidate.start && clampedOffset < candidate.end
+      : clampedOffset > candidate.start && clampedOffset <= candidate.end,
   );
   if (!entry) {
-    const fallback = entries[entries.length - 1];
+    const fallback = bias === "start" ? entries[0] : entries[entries.length - 1];
     return fallback
       ? {
           node: fallback.node,
-          offset: fallback.end - fallback.start,
+          offset: bias === "start" ? 0 : fallback.end - fallback.start,
         }
       : null;
   }
@@ -943,25 +1004,32 @@ export function getTextRangeRects({
   start: number;
   end: number;
 }): HighlightRect[] {
-  const rangeStart = findTextPosition(entries, start);
-  const rangeEnd = findTextPosition(entries, end);
-  if (!rangeStart || !rangeEnd) {
+  if (end <= start) {
     return [];
   }
 
-  const range = document.createRange();
   const containerRect = container.getBoundingClientRect();
-  range.setStart(rangeStart.node, rangeStart.offset);
-  range.setEnd(rangeEnd.node, rangeEnd.offset);
-  const rects = Array.from(range.getClientRects())
-    .map((rect) => ({
-      left: rect.left - containerRect.left,
-      top: rect.top - containerRect.top,
-      width: rect.width,
-      height: rect.height,
-    }))
-    .filter((rect) => rect.width > 0 && rect.height > 0);
-  range.detach();
+  const rects = entries.flatMap((entry) => {
+    const overlapStart = Math.max(start, entry.start);
+    const overlapEnd = Math.min(end, entry.end);
+    if (overlapEnd <= overlapStart) {
+      return [];
+    }
+
+    const range = document.createRange();
+    range.setStart(entry.node, overlapStart - entry.start);
+    range.setEnd(entry.node, overlapEnd - entry.start);
+    const entryRects = Array.from(range.getClientRects())
+      .map((rect) => ({
+        left: rect.left - containerRect.left,
+        top: rect.top - containerRect.top,
+        width: rect.width,
+        height: rect.height,
+      }))
+      .filter((rect) => rect.width > 0 && rect.height > 0);
+    range.detach();
+    return entryRects;
+  });
   return rects;
 }
 
@@ -992,6 +1060,7 @@ export function buildContinuousHighlightLayout({
     container,
     entries,
     ranges,
+    textLength: text.length,
     contentLength: Math.max(
       1,
       direction === "horizontal" ? container.scrollWidth : container.scrollHeight,

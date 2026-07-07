@@ -15,6 +15,7 @@ import {
   buildContinuousHighlightLayout,
   clamp,
   collectReadableTextNodes,
+  findHighlightRangeIndexForOffset,
   getHighlightOverlayStyle,
   getTextRangeRects,
   speedToPxPerSecond,
@@ -97,6 +98,7 @@ export function ContinuousRsvpRenderer({
   const cycleLengthRef = useRef(1);
   const offsetPxRef = useRef(0);
   const activeWindowStartIndexRef = useRef(0);
+  const highlightRectCacheRef = useRef<Map<number, HighlightRect[]>>(new Map());
   const [activeHighlightRects, setActiveHighlightRects] = useState<HighlightRect[]>([]);
   const activeHighlightRectsReadyRef = useRef(false);
   const [highlightPositionCount, setHighlightPositionCount] = useState(1);
@@ -126,6 +128,28 @@ export function ContinuousRsvpRenderer({
     [rsvpHighlight.style],
   );
 
+  const getCachedHighlightRects = useCallback(
+    (layout: ContinuousHighlightLayout, index: number) => {
+      const cachedRects = highlightRectCacheRef.current.get(index);
+      if (cachedRects) {
+        return cachedRects;
+      }
+
+      const range = layout.ranges[index];
+      const rects = range
+        ? getTextRangeRects({
+            container: layout.container,
+            entries: layout.entries,
+            start: range.start,
+            end: range.end,
+          })
+        : [];
+      highlightRectCacheRef.current.set(index, rects);
+      return rects;
+    },
+    [],
+  );
+
   const applyHighlightWindow = useCallback(
     (startIndex: number) => {
       const layout = highlightLayoutRef.current;
@@ -133,6 +157,7 @@ export function ContinuousRsvpRenderer({
       if (!highlightEnabled || !layout || totalWindows === 0) {
         activeWindowStartIndexRef.current = 0;
         activeHighlightRectsReadyRef.current = false;
+        highlightRectCacheRef.current.clear();
         setActiveHighlightRects([]);
         return;
       }
@@ -143,20 +168,10 @@ export function ContinuousRsvpRenderer({
         return;
       }
       activeWindowStartIndexRef.current = nextStart;
-      const range = layout.ranges[nextStart];
       activeHighlightRectsReadyRef.current = true;
-      setActiveHighlightRects(
-        range
-          ? getTextRangeRects({
-              container: layout.container,
-              entries: layout.entries,
-              start: range.start,
-              end: range.end,
-            })
-          : [],
-      );
+      setActiveHighlightRects(getCachedHighlightRects(layout, nextStart));
     },
-    [highlightEnabled],
+    [getCachedHighlightRects, highlightEnabled],
   );
 
   const measureContinuousLayout = useCallback(() => {
@@ -164,6 +179,7 @@ export function ContinuousRsvpRenderer({
     if (!measureNode) {
       highlightLayoutRef.current = null;
       activeHighlightRectsReadyRef.current = false;
+      highlightRectCacheRef.current.clear();
       setHighlightPositionCount(1);
       return;
     }
@@ -187,6 +203,7 @@ export function ContinuousRsvpRenderer({
 
     if (!highlightEnabled) {
       highlightLayoutRef.current = null;
+      highlightRectCacheRef.current.clear();
       setHighlightPositionCount(1);
       activeHighlightRectsReadyRef.current = false;
       setActiveHighlightRects([]);
@@ -201,6 +218,7 @@ export function ContinuousRsvpRenderer({
       allowBoundaryCrossing: rsvpHighlight.allowBoundaryCrossing,
     });
     highlightLayoutRef.current = layout;
+    highlightRectCacheRef.current.clear();
     const nextPositionCount = Math.max(1, layout?.ranges.length ?? 1);
     setHighlightPositionCount(nextPositionCount);
     if (!layout) {
@@ -218,12 +236,7 @@ export function ContinuousRsvpRenderer({
     activeHighlightRectsReadyRef.current = true;
     setActiveHighlightRects(
       activeRange
-        ? getTextRangeRects({
-            container: layout.container,
-            entries: layout.entries,
-            start: activeRange.start,
-            end: activeRange.end,
-          })
+        ? getCachedHighlightRects(layout, activeWindowStartIndexRef.current)
         : [],
     );
   }, [
@@ -233,17 +246,20 @@ export function ContinuousRsvpRenderer({
     loopGapPx,
     rsvpHighlight.allowBoundaryCrossing,
     rsvpHighlight.unit,
+    getCachedHighlightRects,
     spec,
   ]);
 
   const syncActiveWindow = useCallback(() => {
-    if (!highlightEnabled || highlightPositionCount <= 1) {
+    const layout = highlightLayoutRef.current;
+    const totalWindows = layout?.ranges.length ?? highlightPositionCount;
+    if (!highlightEnabled || totalWindows <= 1) {
       applyHighlightWindow(0);
       return;
     }
 
     const viewport = viewportRef.current;
-    if (!viewport) {
+    if (!viewport || !layout) {
       applyHighlightWindow(0);
       return;
     }
@@ -257,8 +273,13 @@ export function ContinuousRsvpRenderer({
       ((offsetPxRef.current + focusPoint - measureStartRef.current) % contentLength +
       contentLength) %
       contentLength;
-    const nextIndex = Math.round(
-      (relativeFocus / contentLength) * (highlightPositionCount - 1),
+    const relativeTextOffset = Math.min(
+      Math.max(0, layout.textLength - 1),
+      (relativeFocus / contentLength) * Math.max(1, layout.textLength),
+    );
+    const nextIndex = findHighlightRangeIndexForOffset(
+      layout.ranges,
+      relativeTextOffset,
     );
     applyHighlightWindow(nextIndex);
   }, [
@@ -495,6 +516,7 @@ export function ContinuousRsvpRenderer({
         <span
           key={`${index}-${Math.round(rect.left)}-${Math.round(rect.top)}`}
           className="absolute block"
+          data-continuous-highlight-rect="true"
           style={{
             ...highlightStyle,
             left: rect.left,

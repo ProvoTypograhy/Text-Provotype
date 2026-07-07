@@ -30,6 +30,19 @@ function expect(condition, message) {
   }
 }
 
+async function expectPoll(check, message, timeoutMs = 2000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(message);
+}
+
 async function installControlFinder(page) {
   await page.addScriptTag({
     content: `
@@ -211,6 +224,104 @@ async function installUnsupportedLoopExportMock(page) {
       configurable: true,
       value: {
         getDisplayMedia: async () => canvas.captureStream(30),
+      },
+    });
+  });
+}
+
+async function installPendingLoopExportMock(page) {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "CropTarget", {
+      configurable: true,
+      value: {
+        fromElement: async () => ({}),
+      },
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () =>
+          await new Promise((_, reject) => {
+            window.__rejectLoopExportCapture = reject;
+          }),
+      },
+    });
+  });
+}
+
+async function installCropTargetAuditLoopExportMock(page) {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "CropTarget", {
+      configurable: true,
+      value: {
+        fromElement: async (element) => {
+          const rect = element.getBoundingClientRect();
+          const oversizedChild = Array.from(element.children).find((child) =>
+            child instanceof HTMLElement && child.style.transform.includes("translate"),
+          );
+          const childRect = oversizedChild?.getBoundingClientRect();
+          window.__loopExportCropAudit = {
+            width: rect.width,
+            height: rect.height,
+            childWidth: childRect?.width ?? 0,
+            childHeight: childRect?.height ?? 0,
+            overflow: getComputedStyle(element).overflow,
+            hasRepaintSentinel: Boolean(
+              element.querySelector('[data-loop-capture-repaint="true"]'),
+            ),
+          };
+          return {};
+        },
+      },
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 320;
+          canvas.height = 180;
+          const stream = canvas.captureStream(0);
+          const [track] = stream.getVideoTracks();
+          track.cropTo = async () => {
+            throw new Error("Crop audit complete.");
+          };
+          return stream;
+        },
+      },
+    });
+  });
+}
+
+async function installFrozenLoopExportMock(page) {
+  await page.evaluate(() => {
+    Object.defineProperty(window, "CropTarget", {
+      configurable: true,
+      value: {
+        fromElement: async () => ({}),
+      },
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getDisplayMedia: async () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 320;
+          canvas.height = 180;
+          const context = canvas.getContext("2d");
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.fillStyle = "#111111";
+          context.fillRect(32, 32, 96, 48);
+          const stream = canvas.captureStream(0);
+          const [track] = stream.getVideoTracks();
+          const intervalId = window.setInterval(() => {
+            track.requestFrame?.();
+          }, 50);
+          track.addEventListener("ended", () => window.clearInterval(intervalId));
+          track.cropTo = async () => {};
+          return stream;
+        },
       },
     });
   });
@@ -488,6 +599,38 @@ try {
     return "Continuous highlight controls appeared.";
   });
 
+  await runCheck("Highlight", "Continuous vertical highlight with staircase", async () => {
+    await selectOption(page, "Mode", "continuous");
+    await selectOption(page, "Direction", "vertical");
+    await setRange(page, "Viewport Step", 8);
+    await setCheckbox(page, "Enable guide markers", false);
+    await setCheckbox(page, "Enable staircase", true);
+    await setCheckbox(page, "Enable Highlight", true);
+    await expectPoll(
+      async () => (await page.locator('[data-continuous-highlight-rect="true"]').count()) > 0,
+      "Continuous vertical staircase layout did not produce highlight rectangles.",
+    );
+    const rectCount = await page.locator('[data-continuous-highlight-rect="true"]').count();
+    return `Rendered ${rectCount} highlight rectangle(s) with staircase enabled.`;
+  });
+
+  await runCheck("Highlight", "Continuous vertical highlight with guide markers", async () => {
+    await selectOption(page, "Mode", "continuous");
+    await selectOption(page, "Direction", "vertical");
+    await setRange(page, "Viewport Step", 8);
+    await setCheckbox(page, "Enable staircase", false);
+    await setCheckbox(page, "Enable guide markers", true);
+    await setCheckbox(page, "Enable Highlight", true);
+    await expectPoll(
+      async () => (await page.locator('[data-continuous-highlight-rect="true"]').count()) > 0,
+      "Continuous vertical guide marker layout did not produce highlight rectangles.",
+    );
+    const markerCount = await page.locator('span[aria-hidden="true"]').count();
+    const rectCount = await page.locator('[data-continuous-highlight-rect="true"]').count();
+    expect(markerCount > 0, `Marker count was ${markerCount}.`);
+    return `Rendered ${rectCount} highlight rectangle(s) with ${markerCount} marker span(s).`;
+  });
+
   await runCheck("Highlight", "Continuous vertical highlight combined with markers/staircase", async () => {
     await selectOption(page, "Mode", "continuous");
     await selectOption(page, "Direction", "vertical");
@@ -573,6 +716,85 @@ try {
         `Error was ${errorText}.`,
       );
       return "Unsupported Region Capture surfaced an inline error.";
+    } finally {
+      await exportPage.close();
+    }
+  });
+
+  await runCheck("Export", "Loop export hides modal and cursor before capture", async () => {
+    const exportPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(exportPage);
+      await installPendingLoopExportMock(exportPage);
+      await exportPage.getByRole("button", { name: "View Settings Json" }).click();
+      await exportPage.getByRole("button", { name: "Export Loop" }).click();
+      await expectPoll(
+        async () => (await exportPage.getByText("ConditionSpec").count()) === 0,
+        "Settings modal stayed visible while capture was pending.",
+      );
+      expect(
+        await exportPage.locator(".cursor-none").count() > 0,
+        "Viewport did not hide the cursor during capture.",
+      );
+      expect(
+        await exportPage.locator('[data-loop-capture-repaint="true"]').count() > 0,
+        "Viewport repaint sentinel was not present during capture.",
+      );
+      await exportPage.evaluate(() => {
+        window.__rejectLoopExportCapture?.(
+          new DOMException("Export canceled.", "NotAllowedError"),
+        );
+      });
+      await expectPoll(
+        async () => (await exportPage.getByText("ConditionSpec").count()) > 0,
+        "Settings modal did not reopen after canceled capture.",
+      );
+      await exportPage.getByRole("button", { name: "Close" }).click();
+      return "Modal was hidden and viewport cursor was suppressed before capture.";
+    } finally {
+      await exportPage.close();
+    }
+  });
+
+  await runCheck("Export", "Loop export crops the bounded viewport frame", async () => {
+    const exportPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(exportPage);
+      await setRange(exportPage, "Viewport Width", 50);
+      await setRange(exportPage, "Viewport Height", 50);
+      await installCropTargetAuditLoopExportMock(exportPage);
+      await exportPage.getByRole("button", { name: "View Settings Json" }).click();
+      await exportPage.getByRole("button", { name: "Export Loop" }).click();
+      await expectPoll(
+        async () => Boolean(await exportPage.evaluate(() => window.__loopExportCropAudit)),
+        "Crop target was not inspected.",
+      );
+      const audit = await exportPage.evaluate(() => window.__loopExportCropAudit);
+      expect(audit.overflow === "hidden", `Crop target overflow was ${audit.overflow}.`);
+      expect(audit.hasRepaintSentinel, "Crop target did not contain the repaint sentinel.");
+      expect(
+        audit.childWidth > audit.width && audit.childHeight > audit.height,
+        `Crop target appeared to be oversized: target=${audit.width}x${audit.height}, child=${audit.childWidth}x${audit.childHeight}.`,
+      );
+      await exportPage.getByRole("button", { name: "Close" }).click();
+      return `Crop target ${Math.round(audit.width)}x${Math.round(audit.height)} contained oversized content ${Math.round(audit.childWidth)}x${Math.round(audit.childHeight)}.`;
+    } finally {
+      await exportPage.close();
+    }
+  });
+
+  await runCheck("Export", "Loop export rejects frozen autoplay capture", async () => {
+    const exportPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(exportPage);
+      await installFrozenLoopExportMock(exportPage);
+      await exportPage.getByRole("button", { name: "View Settings Json" }).click();
+      await exportPage.getByRole("button", { name: "Export Loop" }).click();
+      await exportPage
+        .getByText("Captured viewport stayed static; export was canceled to avoid downloading a frozen autoplay loop.")
+        .waitFor({ timeout: 12000 });
+      await exportPage.getByRole("button", { name: "Close" }).click();
+      return "Frozen capture stream was rejected before download.";
     } finally {
       await exportPage.close();
     }

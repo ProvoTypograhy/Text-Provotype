@@ -50,6 +50,25 @@ import { Viewport } from "./renderers/Viewport";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { SettingsJsonModal } from "./settings/SettingsJsonModal";
 
+const LOOP_EXPORT_DURATION_SECONDS_DEFAULT = 5;
+const LOOP_EXPORT_DURATION_SECONDS_MIN = 1;
+const LOOP_EXPORT_DURATION_SECONDS_MAX = 60;
+
+function waitForPaintFrames(count = 2) {
+  return new Promise<void>((resolve) => {
+    let remainingFrames = count;
+    const tick = () => {
+      remainingFrames -= 1;
+      if (remainingFrames <= 0) {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
+  });
+}
+
 export function ProvotypographerApp() {
   const [spec, setSpec] = useState<ConditionSpec>({
     ...conditionSpec,
@@ -78,6 +97,10 @@ export function ProvotypographerApp() {
   const [loopExportError, setLoopExportError] = useState("");
   const [loopExportStatus, setLoopExportStatus] = useState("");
   const [isLoopExporting, setIsLoopExporting] = useState(false);
+  const [isLoopCaptureActive, setIsLoopCaptureActive] = useState(false);
+  const [loopExportDurationSeconds, setLoopExportDurationSeconds] = useState(
+    String(LOOP_EXPORT_DURATION_SECONDS_DEFAULT),
+  );
   const [text, setText] = useState("");
   const [resetContinuousHighlightKey, setResetContinuousHighlightKey] = useState(0);
   const logsRef = useRef<LogEntry[]>([]);
@@ -87,6 +110,8 @@ export function ProvotypographerApp() {
   const splitViewRef = useRef<HTMLDivElement | null>(null);
   const viewportAreaRef = useRef<HTMLDivElement | null>(null);
   const exportViewportRef = useRef<HTMLDivElement | null>(null);
+  const loopCaptureRepaintRef = useRef<HTMLDivElement | null>(null);
+  const loopCaptureRepaintFrameRef = useRef<number | null>(null);
   const viewportResizeStartRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -543,8 +568,86 @@ export function ProvotypographerApp() {
     URL.revokeObjectURL(url);
   }, [settingsName, settingsPayload]);
 
+  const getLoopExportDurationSeconds = useCallback(() => {
+    const durationSeconds = Number(loopExportDurationSeconds);
+
+    if (!Number.isFinite(durationSeconds)) {
+      return LOOP_EXPORT_DURATION_SECONDS_DEFAULT;
+    }
+
+    return clamp(
+      Math.round(durationSeconds),
+      LOOP_EXPORT_DURATION_SECONDS_MIN,
+      LOOP_EXPORT_DURATION_SECONDS_MAX,
+    );
+  }, [loopExportDurationSeconds]);
+
+  const handleLoopExportDurationChange = useCallback((value: string) => {
+    if (value === "") {
+      setLoopExportDurationSeconds(value);
+      return;
+    }
+
+    const durationSeconds = Number(value);
+
+    if (!Number.isFinite(durationSeconds)) {
+      return;
+    }
+
+    setLoopExportDurationSeconds(
+      String(
+        clamp(
+          Math.round(durationSeconds),
+          LOOP_EXPORT_DURATION_SECONDS_MIN,
+          LOOP_EXPORT_DURATION_SECONDS_MAX,
+        ),
+      ),
+    );
+  }, []);
+
+  const handleLoopExportDurationBlur = useCallback(() => {
+    setLoopExportDurationSeconds(String(getLoopExportDurationSeconds()));
+  }, [getLoopExportDurationSeconds]);
+
+  const startLoopCaptureRepaintTick = useCallback(() => {
+    if (loopCaptureRepaintFrameRef.current != null) {
+      window.cancelAnimationFrame(loopCaptureRepaintFrameRef.current);
+    }
+
+    let frameIndex = 0;
+    const tick = () => {
+      frameIndex += 1;
+      const node = loopCaptureRepaintRef.current;
+      if (node) {
+        node.style.backgroundColor =
+          frameIndex % 2 === 0
+            ? "rgba(0,0,0,0.01)"
+            : "rgba(255,255,255,0.01)";
+      }
+      loopCaptureRepaintFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    loopCaptureRepaintFrameRef.current = window.requestAnimationFrame(tick);
+  }, []);
+
+  const stopLoopCaptureRepaintTick = useCallback(() => {
+    if (loopCaptureRepaintFrameRef.current != null) {
+      window.cancelAnimationFrame(loopCaptureRepaintFrameRef.current);
+      loopCaptureRepaintFrameRef.current = null;
+    }
+
+    const node = loopCaptureRepaintRef.current;
+    if (node) {
+      node.style.backgroundColor = "rgba(0,0,0,0)";
+    }
+  }, []);
+
   const handleExportLoop = useCallback(async () => {
     const node = exportViewportRef.current;
+    const durationSeconds = getLoopExportDurationSeconds();
+
+    setLoopExportDurationSeconds(String(durationSeconds));
+
     if (!node) {
       setLoopExportError("The viewport is not ready to export.");
       setLoopExportStatus("");
@@ -553,24 +656,21 @@ export function ProvotypographerApp() {
 
     try {
       setIsLoopExporting(true);
+      setIsLoopCaptureActive(true);
       setLoopExportError("");
       setLoopExportStatus("Choose this tab to record the exact viewport.");
+      setIsSpecModalOpen(false);
+      startLoopCaptureRepaintTick();
 
       const result = await exportViewportLoop(
         {
           viewportNode: node,
         },
         {
-          durationMs: 5000,
+          durationMs: durationSeconds * 1000,
           fps: 30,
-          onCaptureReady: async () => {
-            setIsSpecModalOpen(false);
-            await new Promise<void>((resolve) => {
-              window.requestAnimationFrame(() => {
-                window.requestAnimationFrame(() => resolve());
-              });
-            });
-          },
+          expectMotion: spec.motion.autoplay,
+          onBeforeCapture: () => waitForPaintFrames(2),
           onProgress: ({ elapsedMs, durationMs }) => {
             setLoopExportStatus(
               `Recording exact viewport ${Math.ceil(elapsedMs / 1000)}/${Math.ceil(
@@ -588,7 +688,7 @@ export function ProvotypographerApp() {
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setLoopExportStatus(
         result.extension === "mp4"
           ? "Exact MP4 viewport loop downloaded."
@@ -600,10 +700,18 @@ export function ProvotypographerApp() {
       setLoopExportError(message);
       setLoopExportStatus("");
     } finally {
+      stopLoopCaptureRepaintTick();
       setIsLoopExporting(false);
+      setIsLoopCaptureActive(false);
       setIsSpecModalOpen(true);
     }
-  }, [settingsName]);
+  }, [
+    getLoopExportDurationSeconds,
+    settingsName,
+    spec.motion.autoplay,
+    startLoopCaptureRepaintTick,
+    stopLoopCaptureRepaintTick,
+  ]);
 
   const handleCopyShareLink = useCallback(async () => {
     try {
@@ -1172,27 +1280,40 @@ export function ProvotypographerApp() {
                 }}
               >
                 <div
-                  className="absolute left-1/2 top-1/2"
-                  style={{
-                    width: `${10000 / viewportWidthPercent}%`,
-                    height: `${10000 / viewportHeightPercent}%`,
-                    transform: "translate(-50%, -50%)",
-                  }}
+                  ref={exportViewportRef}
+                  className={`relative h-full w-full overflow-hidden ${
+                    isLoopCaptureActive ? "cursor-none [&_*]:cursor-none" : ""
+                  }`}
                 >
-                  <div ref={exportViewportRef} className="h-full w-full">
-                    <Viewport
-                      spec={spec}
-                      viewportStep={viewportStep}
-                      rsvpToken={currentRsvpToken}
-                      continuousText={text}
-                      highlightJumpRateHz={effectiveHighlightJumpRateHz}
-                      resetContinuousHighlightKey={resetContinuousHighlightKey}
-                      rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
-                      manualAdvanceEnabled={canManualAdvance}
-                      onManualAdvance={() => advanceRsvp("manual")}
-                      onViewportMouseMove={handleViewportMouseMove}
-                      onViewportMouseLeave={handleViewportMouseLeave}
-                    />
+                  <div
+                    ref={loopCaptureRepaintRef}
+                    className="pointer-events-none absolute left-0 top-0 z-[1] h-px w-px"
+                    data-loop-capture-repaint="true"
+                    aria-hidden="true"
+                  />
+                  <div
+                    className="absolute left-1/2 top-1/2"
+                    style={{
+                      width: `${10000 / viewportWidthPercent}%`,
+                      height: `${10000 / viewportHeightPercent}%`,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                  >
+                    <div className="relative h-full w-full">
+                      <Viewport
+                        spec={spec}
+                        viewportStep={viewportStep}
+                        rsvpToken={currentRsvpToken}
+                        continuousText={text}
+                        highlightJumpRateHz={effectiveHighlightJumpRateHz}
+                        resetContinuousHighlightKey={resetContinuousHighlightKey}
+                        rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
+                        manualAdvanceEnabled={canManualAdvance}
+                        onManualAdvance={() => advanceRsvp("manual")}
+                        onViewportMouseMove={handleViewportMouseMove}
+                        onViewportMouseLeave={handleViewportMouseLeave}
+                      />
+                    </div>
                   </div>
                 </div>
                 {[
@@ -1308,6 +1429,9 @@ export function ProvotypographerApp() {
         isOpen={isSpecModalOpen}
         settingsName={settingsName}
         settingsPayload={settingsPayload}
+        loopExportDurationSeconds={loopExportDurationSeconds}
+        loopExportDurationSecondsMin={LOOP_EXPORT_DURATION_SECONDS_MIN}
+        loopExportDurationSecondsMax={LOOP_EXPORT_DURATION_SECONDS_MAX}
         settingsModalError={settingsModalError}
         settingsModalStatus={settingsModalStatus}
         shareLinkFallback={shareLinkFallback}
@@ -1317,6 +1441,8 @@ export function ProvotypographerApp() {
         settingsFileInputRef={settingsFileInputRef}
         onClose={() => setIsSpecModalOpen(false)}
         onSettingsNameChange={setSettingsName}
+        onLoopExportDurationChange={handleLoopExportDurationChange}
+        onLoopExportDurationBlur={handleLoopExportDurationBlur}
         onDownloadSettings={handleDownloadSettings}
         onExportLoop={() => void handleExportLoop()}
         onCopyShareLink={() => void handleCopyShareLink()}

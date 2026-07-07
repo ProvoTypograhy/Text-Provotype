@@ -68,6 +68,9 @@ export function SettingsJsonModal({
   isOpen,
   settingsName,
   settingsPayload,
+  loopExportDurationSeconds,
+  loopExportDurationSecondsMin,
+  loopExportDurationSecondsMax,
   settingsModalError,
   settingsModalStatus,
   shareLinkFallback,
@@ -77,6 +80,8 @@ export function SettingsJsonModal({
   settingsFileInputRef,
   onClose,
   onSettingsNameChange,
+  onLoopExportDurationChange,
+  onLoopExportDurationBlur,
   onDownloadSettings,
   onExportLoop,
   onCopyShareLink,
@@ -86,6 +91,9 @@ export function SettingsJsonModal({
   isOpen: boolean;
   settingsName: string;
   settingsPayload: SettingsJson;
+  loopExportDurationSeconds: string;
+  loopExportDurationSecondsMin: number;
+  loopExportDurationSecondsMax: number;
   settingsModalError: string;
   settingsModalStatus: string;
   shareLinkFallback: string;
@@ -95,6 +103,8 @@ export function SettingsJsonModal({
   settingsFileInputRef: RefObject<HTMLInputElement | null>;
   onClose: () => void;
   onSettingsNameChange: (value: string) => void;
+  onLoopExportDurationChange: (value: string) => void;
+  onLoopExportDurationBlur: () => void;
   onDownloadSettings: () => void;
   onExportLoop: () => void;
   onCopyShareLink: () => void;
@@ -154,15 +164,34 @@ export function SettingsJsonModal({
           </div>
           <div className="flex flex-col gap-1 self-end">
             <span className="text-xs text-zinc-500">Loop</span>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={onExportLoop}
-              disabled={isLoopExporting}
-            >
-              <SettingsActionIcon name="video" />
-              <span>{isLoopExporting ? "Exporting..." : "Export Loop"}</span>
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <label className="flex items-center gap-2 rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-700 has-disabled:cursor-not-allowed has-disabled:opacity-50">
+                <span>Seconds</span>
+                <input
+                  type="number"
+                  min={loopExportDurationSecondsMin}
+                  max={loopExportDurationSecondsMax}
+                  step={1}
+                  className="w-16 border-l border-zinc-200 pl-2 text-sm text-zinc-900 outline-none disabled:cursor-not-allowed"
+                  value={loopExportDurationSeconds}
+                  onChange={(event) =>
+                    onLoopExportDurationChange(event.currentTarget.value)
+                  }
+                  onBlur={onLoopExportDurationBlur}
+                  disabled={isLoopExporting}
+                  aria-label="Loop export duration in seconds"
+                />
+              </label>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded border border-zinc-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onExportLoop}
+                disabled={isLoopExporting}
+              >
+                <SettingsActionIcon name="video" />
+                <span>{isLoopExporting ? "Exporting..." : "Export Loop"}</span>
+              </button>
+            </div>
           </div>
           <div className="flex flex-col gap-1 self-end">
             <span className="text-xs text-zinc-500">Share</span>
