@@ -98,6 +98,7 @@ export function ContinuousRsvpRenderer({
   const cycleLengthRef = useRef(1);
   const offsetPxRef = useRef(0);
   const activeWindowStartIndexRef = useRef(0);
+  const layoutSignatureRef = useRef<string | null>(null);
   const highlightRectCacheRef = useRef<Map<number, HighlightRect[]>>(new Map());
   const [activeHighlightRects, setActiveHighlightRects] = useState<HighlightRect[]>([]);
   const activeHighlightRectsReadyRef = useRef(false);
@@ -126,6 +127,24 @@ export function ContinuousRsvpRenderer({
   const highlightStyle = useMemo(
     () => getHighlightOverlayStyle(rsvpHighlight.style),
     [rsvpHighlight.style],
+  );
+
+  const layoutSignature = useMemo(
+    () =>
+      JSON.stringify({
+        direction,
+        useSentenceStructuredLayout,
+        tokenizationUnit: spec.tokenization.unit,
+        paragraphStaircase: spec.typography.paragraphStaircase,
+        sentenceMarkers: spec.typography.sentenceMarkers,
+      }),
+    [
+      direction,
+      spec.tokenization.unit,
+      spec.typography.paragraphStaircase,
+      spec.typography.sentenceMarkers,
+      useSentenceStructuredLayout,
+    ],
   );
 
   const getCachedHighlightRects = useCallback(
@@ -163,13 +182,40 @@ export function ContinuousRsvpRenderer({
       }
 
       const maxStart = Math.max(0, totalWindows - 1);
-      const nextStart = clamp(startIndex, 0, maxStart);
-      if (nextStart === activeWindowStartIndexRef.current && activeHighlightRectsReadyRef.current) {
+      let nextStart = clamp(startIndex, 0, maxStart);
+      let nextRects = getCachedHighlightRects(layout, nextStart);
+      if (!nextRects.length && totalWindows > 1) {
+        for (let distance = 1; distance < totalWindows; distance += 1) {
+          const previousIndex = nextStart - distance;
+          if (previousIndex >= 0) {
+            const previousRects = getCachedHighlightRects(layout, previousIndex);
+            if (previousRects.length) {
+              nextStart = previousIndex;
+              nextRects = previousRects;
+              break;
+            }
+          }
+
+          const nextIndex = nextStart + distance;
+          if (nextIndex < totalWindows) {
+            const candidateRects = getCachedHighlightRects(layout, nextIndex);
+            if (candidateRects.length) {
+              nextStart = nextIndex;
+              nextRects = candidateRects;
+              break;
+            }
+          }
+        }
+      }
+      if (
+        nextStart === activeWindowStartIndexRef.current &&
+        activeHighlightRectsReadyRef.current
+      ) {
         return;
       }
       activeWindowStartIndexRef.current = nextStart;
       activeHighlightRectsReadyRef.current = true;
-      setActiveHighlightRects(getCachedHighlightRects(layout, nextStart));
+      setActiveHighlightRects(nextRects);
     },
     [getCachedHighlightRects, highlightEnabled],
   );
@@ -302,6 +348,35 @@ export function ContinuousRsvpRenderer({
         ? `translateX(${-snappedOffset}px)`
         : `translateY(${-snappedOffset}px)`;
   }, [direction]);
+
+  const resetContinuousFlowPosition = useCallback(() => {
+    offsetPxRef.current = 0;
+    lastTsRef.current = null;
+    activeWindowStartIndexRef.current = 0;
+    activeHighlightRectsReadyRef.current = false;
+    highlightRectCacheRef.current.clear();
+    applyTrackTransform();
+  }, [applyTrackTransform]);
+
+  useEffect(() => {
+    const previousSignature = layoutSignatureRef.current;
+    layoutSignatureRef.current = layoutSignature;
+    if (previousSignature == null || previousSignature === layoutSignature) {
+      return;
+    }
+
+    resetContinuousFlowPosition();
+    const frameId = window.requestAnimationFrame(() => {
+      measureContinuousLayout();
+      syncActiveWindow();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    layoutSignature,
+    measureContinuousLayout,
+    resetContinuousFlowPosition,
+    syncActiveWindow,
+  ]);
 
   useEffect(() => {
     pxPerSecondRef.current = pxPerSecond;
@@ -463,14 +538,18 @@ export function ContinuousRsvpRenderer({
   ]);
 
   useEffect(() => {
-    activeWindowStartIndexRef.current = 0;
-    activeHighlightRectsReadyRef.current = false;
+    resetContinuousFlowPosition();
     const frameId = window.requestAnimationFrame(() => {
       measureContinuousLayout();
       syncActiveWindow();
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [measureContinuousLayout, resetHighlightKey, syncActiveWindow]);
+  }, [
+    measureContinuousLayout,
+    resetContinuousFlowPosition,
+    resetHighlightKey,
+    syncActiveWindow,
+  ]);
 
   const contentChildren = useMemo(() => {
     if (useSentenceStructuredLayout) {
@@ -568,6 +647,7 @@ export function ContinuousRsvpRenderer({
         <div className="absolute inset-y-0 left-0 flex items-center overflow-hidden">
           <div
             ref={trackRef}
+            data-continuous-track="true"
             className="flex items-center px-8"
             style={{
               gap: loopGapPx,
@@ -581,6 +661,7 @@ export function ContinuousRsvpRenderer({
         <div className="absolute inset-x-0 top-0 overflow-hidden px-8">
           <div
             ref={trackRef}
+            data-continuous-track="true"
             className="flex flex-col"
             style={{
               gap: loopGapPx,

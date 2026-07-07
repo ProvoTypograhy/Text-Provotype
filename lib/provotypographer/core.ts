@@ -933,6 +933,33 @@ export function isInsideAriaHidden(node: Node): boolean {
   return false;
 }
 
+function getReadableTextBlockAncestor(node: Node): Element | null {
+  let current = node.parentElement;
+  while (current) {
+    const display = getComputedStyle(current).display;
+    if (
+      display === "block" ||
+      display === "flow-root" ||
+      display === "list-item" ||
+      display === "flex" ||
+      display === "grid" ||
+      display === "table" ||
+      display === "table-row" ||
+      display === "table-cell"
+    ) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function shouldSeparateReadableTextNodes(previousNode: Text, nextNode: Text) {
+  const previousBlock = getReadableTextBlockAncestor(previousNode);
+  const nextBlock = getReadableTextBlockAncestor(nextNode);
+  return Boolean(previousBlock && nextBlock && previousBlock !== nextBlock);
+}
+
 export function collectReadableTextNodes(root: HTMLElement) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const entries: Array<{
@@ -941,12 +968,21 @@ export function collectReadableTextNodes(root: HTMLElement) {
     end: number;
   }> = [];
   let text = "";
+  let previousTextNode: Text | null = null;
   let current = walker.nextNode();
 
   while (current) {
     if (current instanceof Text && !isInsideAriaHidden(current)) {
       const value = current.nodeValue ?? "";
       if (value.length > 0) {
+        if (
+          previousTextNode &&
+          shouldSeparateReadableTextNodes(previousTextNode, current) &&
+          text.length > 0 &&
+          !/\s$/u.test(text)
+        ) {
+          text += "\n";
+        }
         const start = text.length;
         text += value;
         entries.push({
@@ -954,6 +990,7 @@ export function collectReadableTextNodes(root: HTMLElement) {
           start,
           end: start + value.length,
         });
+        previousTextNode = current;
       }
     }
     current = walker.nextNode();

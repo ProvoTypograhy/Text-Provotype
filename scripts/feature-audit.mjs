@@ -650,6 +650,63 @@ try {
     return `Markers before highlight=${markersBeforeHighlight}, after highlight=${markersAfterHighlight}.`;
   });
 
+  await runCheck("Highlight", "Continuous vertical keeps highlight when structure is enabled later", async () => {
+    await selectOption(page, "Mode", "continuous");
+    await selectOption(page, "Direction", "vertical");
+    await setCheckbox(page, "Enable guide markers", false);
+    await setCheckbox(page, "Enable staircase", false);
+    await setCheckbox(page, "Autoplay", true);
+    await setRange(page, "Speed (chars/sec):", 80);
+    await setCheckbox(page, "Enable Highlight", true);
+    await setRange(page, "Highlight Size:", 6);
+    await page.waitForTimeout(1200);
+    const movedTranslateY = await page.evaluate(() => {
+      const track = document.querySelector('[data-continuous-track="true"]');
+      const transform = track ? getComputedStyle(track).transform : "none";
+      return transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m42;
+    });
+    expect(
+      Math.abs(movedTranslateY) > 10,
+      `Track did not advance before structure toggle: ${movedTranslateY}.`,
+    );
+
+    await setCheckbox(page, "Enable guide markers", true);
+    await setCheckbox(page, "Enable staircase", true);
+    await expectPoll(
+      async () =>
+        await page.evaluate(
+          () =>
+            Array.from(
+              document.querySelectorAll('[data-continuous-highlight-rect="true"]'),
+            ).some((element) => {
+              const rect = element.getBoundingClientRect();
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                rect.bottom >= 0 &&
+                rect.top <= window.innerHeight
+              );
+            }),
+        ),
+      "Highlight disappeared after guide markers/staircase were enabled.",
+    );
+
+    await setCheckbox(page, "Autoplay", false);
+    await page.getByRole("button", { name: "Reset Highlight Position" }).click();
+    await page.waitForTimeout(100);
+    const resetTranslateY = await page.evaluate(() => {
+      const track = document.querySelector('[data-continuous-track="true"]');
+      const transform = track ? getComputedStyle(track).transform : "none";
+      return transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m42;
+    });
+    expect(
+      Math.abs(resetTranslateY) <= 1,
+      `Reset did not return the continuous track to the start: ${resetTranslateY}.`,
+    );
+    await setCheckbox(page, "Autoplay", true);
+    return "Highlight survived late structure toggle and reset returned the track to start.";
+  });
+
   await runCheck("Structured Layout", "Markers render without highlight", async () => {
     await selectOption(page, "Mode", "rsvp");
     await setCheckbox(page, "Enable Highlight", false);
