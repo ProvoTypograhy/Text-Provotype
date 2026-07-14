@@ -15,6 +15,10 @@ import {
   type LogEntry,
   type ViewportStep,
 } from "@/lib/provotypographer/core";
+import {
+  LEXICAL_BASELINE_MAX_MS,
+  LEXICAL_BASELINE_MIN_MS,
+} from "@/lib/provotypographer/lexical-timing";
 
 type SettingsPanelProps = {
   text: string;
@@ -45,6 +49,7 @@ type SettingsPanelProps = {
   allowedHighlightSteps: readonly ViewportStep[];
   highlightStepIndex: number;
   setIsSpecModalOpen: Dispatch<SetStateAction<boolean>>;
+  lexicalTimingStatus: string;
 };
 
 export function SettingsPanel({
@@ -76,6 +81,7 @@ export function SettingsPanel({
   allowedHighlightSteps,
   highlightStepIndex,
   setIsSpecModalOpen,
+  lexicalTimingStatus,
 }: SettingsPanelProps) {
   return (
                     <div className="space-y-4">
@@ -249,6 +255,7 @@ export function SettingsPanel({
                           <label className="flex items-center gap-2 pt-6">
                             <input
                               type="checkbox"
+                              disabled={spec.motion.rsvpLexicalTiming.enabled}
                               checked={spec.motion.rateControl.enabled}
                               onChange={(e) =>
                                 setSpec((prev) => ({
@@ -269,7 +276,10 @@ export function SettingsPanel({
                             <input
                               type="checkbox"
                               checked={spec.motion.rateControl.resetOnLeave}
-                              disabled={!spec.motion.rateControl.enabled}
+                              disabled={
+                                !spec.motion.rateControl.enabled ||
+                                spec.motion.rsvpLexicalTiming.enabled
+                              }
                               onChange={(e) =>
                                 setSpec((prev) => ({
                                   ...prev,
@@ -311,6 +321,7 @@ export function SettingsPanel({
                                   min={1}
                                   max={80}
                                   step={1}
+                                  disabled={spec.motion.rsvpLexicalTiming.enabled}
                                   value={spec.motion.speed.value}
                                   onChange={(e) =>
                                     setSpec((prev) => ({
@@ -328,6 +339,78 @@ export function SettingsPanel({
                                     }))
                                   }
                                 />
+                              </label>
+                              <label className="flex items-center gap-2 pt-6">
+                                <input
+                                  type="checkbox"
+                                  checked={spec.motion.rsvpLexicalTiming.enabled}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        rsvpLexicalTiming: {
+                                          ...prev.motion.rsvpLexicalTiming,
+                                          enabled: e.target.checked,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                />
+                                Lexical timing
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                Baseline fixation (ms):{" "}
+                                {Math.round(
+                                  spec.motion.rsvpLexicalTiming.baselineFixationMs,
+                                )}
+                                <input
+                                  className="w-full"
+                                  type="range"
+                                  min={LEXICAL_BASELINE_MIN_MS}
+                                  max={LEXICAL_BASELINE_MAX_MS}
+                                  step={1}
+                                  disabled={!spec.motion.rsvpLexicalTiming.enabled}
+                                  value={spec.motion.rsvpLexicalTiming.baselineFixationMs}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        rsvpLexicalTiming: {
+                                          ...prev.motion.rsvpLexicalTiming,
+                                          baselineFixationMs: clamp(
+                                            Number(e.target.value) ||
+                                              conditionSpec.motion.rsvpLexicalTiming
+                                                .baselineFixationMs,
+                                            LEXICAL_BASELINE_MIN_MS,
+                                            LEXICAL_BASELINE_MAX_MS,
+                                          ),
+                                        },
+                                      },
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <label className="flex items-center gap-2 pt-6">
+                                <input
+                                  type="checkbox"
+                                  disabled={!spec.motion.rsvpLexicalTiming.enabled}
+                                  checked={spec.motion.rsvpLexicalTiming.includeSaccade}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        rsvpLexicalTiming: {
+                                          ...prev.motion.rsvpLexicalTiming,
+                                          includeSaccade: e.target.checked,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                />
+                                Add 30 ms saccade
                               </label>
                               <label className="flex items-center gap-2 pt-6">
                                 <input
@@ -386,7 +469,7 @@ export function SettingsPanel({
                                     }))
                                   }
                                 >
-                                  <option value="">System default</option>
+                                  <option value="">Default English voice</option>
                                   {speechVoices.map((voice) => (
                                     <option
                                       key={`${voice.voiceURI}-${voice.lang}`}
@@ -427,6 +510,11 @@ export function SettingsPanel({
                                 />
                               </label>
                             </div>
+                            {lexicalTimingStatus ? (
+                              <p className="text-xs text-zinc-600" role="status">
+                                {lexicalTimingStatus}
+                              </p>
+                            ) : null}
                             <div className="flex items-end gap-2">
                               <button
                                 type="button"

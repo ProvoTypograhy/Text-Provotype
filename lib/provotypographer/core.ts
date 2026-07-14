@@ -92,6 +92,8 @@ export const FONT_FAMILY_OPTIONS = [
 ] as const;
 export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export const DEFAULT_TEXT_PATH = `${BASE_PATH}/default-text.txt`;
+export const FIXATION_PARAMS_PATH = `${BASE_PATH}/data/fixation_formula_params.csv`;
+export const GAZE_DURATIONS_PATH = `${BASE_PATH}/data/predicted_gaze_durations_default.csv`;
 export const SENTENCE_REGEX = /[^.!?]+[.!?]["'”’)\]]*|[^.!?]+$/g;
 export const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
   "letter-1": "1 L",
@@ -183,6 +185,10 @@ export function normalizeFontFamily(value: unknown): string {
   }
   const trimmed = value.trim();
   return trimmed || conditionSpec.typography.fontFamily;
+}
+
+export function isEnglishLanguageTag(value: string): boolean {
+  return /^en(?:[-_]|$)/i.test(value.trim());
 }
 
 export function bytesToBase64Url(bytes: Uint8Array): string {
@@ -881,19 +887,19 @@ export function getHighlightSpanStyle(
   highlightStyle: ConditionSpec["typography"]["rsvpHighlight"]["style"],
 ): CSSProperties {
   if (highlightStyle === "bold") {
-    return { fontWeight: 700 };
+    return {
+      textShadow: "0.025em 0 currentColor, -0.025em 0 currentColor",
+    };
   }
   if (highlightStyle === "outline") {
     return {
-      boxShadow: "inset 0 0 0 2px currentColor",
+      boxShadow: "0 0 0 2px currentColor",
       borderRadius: "0.12em",
-      paddingInline: "0.08em",
     };
   }
   return {
     backgroundColor: "rgba(250, 204, 21, 0.45)",
     borderRadius: "0.12em",
-    paddingInline: "0.08em",
   };
 }
 
@@ -1161,17 +1167,29 @@ export function getAdvanceCharacterCount(
     return 1;
   }
 
+  return Math.max(
+    1,
+    getAdvanceText(tokens, startIndex, advanceCount, unit).length,
+  );
+}
+
+export function getAdvanceText(
+  tokens: string[],
+  startIndex: number,
+  advanceCount: number,
+  unit: TokenizationUnit,
+): string {
+  if (!tokens.length) {
+    return "";
+  }
   const safeStart =
     ((startIndex % tokens.length) + tokens.length) % tokens.length;
   const size = Math.max(1, Math.floor(advanceCount || 1));
   const movedTokens: string[] = [];
-
   for (let i = 0; i < size; i += 1) {
     movedTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
   }
-
-  const movedText = movedTokens.join(unit === "char" ? "" : " ");
-  return Math.max(1, movedText.length);
+  return movedTokens.join(unit === "char" ? "" : " ");
 }
 
 export function tokenizeText(

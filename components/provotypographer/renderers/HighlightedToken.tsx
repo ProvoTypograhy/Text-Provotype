@@ -15,6 +15,7 @@ export function HighlightedToken({
   allowBoundaryCrossing,
   preserveWhitespace = false,
   jumpIndex,
+  centerAnchored = false,
 }: {
   token: string;
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
@@ -23,6 +24,7 @@ export function HighlightedToken({
   allowBoundaryCrossing: boolean;
   preserveWhitespace?: boolean;
   jumpIndex?: number;
+  centerAnchored?: boolean;
 }) {
   const { before, highlight, after } = getHighlightSegments(
     token,
@@ -32,6 +34,44 @@ export function HighlightedToken({
     allowBoundaryCrossing,
   );
   const highlightStyle = getHighlightSpanStyle(style);
+  if (centerAnchored) {
+    const characters = Array.from(token);
+    const highlightStart = Array.from(before).length;
+    const highlightEnd = highlightStart + Array.from(highlight).length;
+    const centerIndex = Math.floor(characters.length / 2);
+    const renderRange = (start: number, end: number) => {
+      const highlightedStart = Math.min(
+        end,
+        Math.max(start, highlightStart),
+      );
+      const highlightedEnd = Math.min(end, Math.max(start, highlightEnd));
+      return (
+        <>
+          {characters.slice(start, highlightedStart).join("")}
+          {highlightedStart < highlightedEnd ? (
+            <span style={highlightStyle}>
+              {characters.slice(highlightedStart, highlightedEnd).join("")}
+            </span>
+          ) : null}
+          {characters.slice(Math.max(start, highlightedEnd), end).join("")}
+        </>
+      );
+    };
+
+    return (
+      <span
+        className={`grid grid-cols-[1fr_auto_1fr] items-center ${preserveWhitespace ? "whitespace-pre-wrap" : "whitespace-pre"}`}
+      >
+        <span className="justify-self-end text-right">
+          {renderRange(0, centerIndex)}
+        </span>
+        <span>{renderRange(centerIndex, centerIndex + 1)}</span>
+        <span className="text-left">
+          {renderRange(centerIndex + 1, characters.length)}
+        </span>
+      </span>
+    );
+  }
   return (
     <span className={preserveWhitespace ? "whitespace-pre-wrap" : undefined}>
       <span>{before}</span>
@@ -50,6 +90,7 @@ export function AnimatedHighlightedToken({
   jumpRateHz,
   jumpDurationMs,
   preserveWhitespace = false,
+  centerAnchored = false,
 }: {
   token: string;
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
@@ -59,6 +100,7 @@ export function AnimatedHighlightedToken({
   jumpRateHz: number;
   jumpDurationMs?: number;
   preserveWhitespace?: boolean;
+  centerAnchored?: boolean;
 }) {
   const [jumpIndex, setJumpIndex] = useState(0);
   const positionCount = getHighlightPositionCount(
@@ -119,6 +161,7 @@ export function AnimatedHighlightedToken({
       allowBoundaryCrossing={allowBoundaryCrossing}
       preserveWhitespace={preserveWhitespace}
       jumpIndex={jumpIndex}
+      centerAnchored={centerAnchored}
     />
   );
 }

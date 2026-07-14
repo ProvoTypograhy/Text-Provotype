@@ -13,6 +13,8 @@ import {
 import { conditionSpec, type ConditionSpec } from "@/lib/condition-spec";
 import {
   DEFAULT_TEXT_PATH,
+  FIXATION_PARAMS_PATH,
+  GAZE_DURATIONS_PATH,
   HIGHLIGHT_JUMP_RATE_MAX,
   HIGHLIGHT_JUMP_RATE_MIN,
   MIN_SETTINGS_WIDTH,
@@ -29,6 +31,7 @@ import {
   decodeSharePayload,
   encodeSharePayload,
   endsWithPausePunctuation,
+  getAdvanceText,
   getAdvanceCharacterCount,
   getHighlightPositionCount,
   getHighlightSegments,
@@ -39,6 +42,7 @@ import {
   getViewportStepsForMode,
   getViewportTokenCount,
   isHexColor,
+  isEnglishLanguageTag,
   normalizeFontFamily,
   sanitizeSettingsName,
   tokenizeText,
@@ -47,6 +51,14 @@ import {
   type SharePayloadV1,
   type ViewportStep,
 } from "@/lib/provotypographer/core";
+import {
+  LEXICAL_BASELINE_MAX_MS,
+  LEXICAL_BASELINE_MIN_MS,
+  getLexicalAdvanceDurationMs,
+  parseFixationFormulaParamsCsv,
+  parsePredictedGazeDurationsCsv,
+  type LexicalTimingResources,
+} from "@/lib/provotypographer/lexical-timing";
 import { exportViewportLoop } from "@/lib/provotypographer/loop-export";
 import { Viewport } from "./renderers/Viewport";
 import { SettingsPanel } from "./settings/SettingsPanel";
@@ -119,6 +131,10 @@ export function ProvotypographerApp() {
   );
   const [text, setText] = useState("");
   const [resetContinuousHighlightKey, setResetContinuousHighlightKey] = useState(0);
+  const [lexicalTimingResources, setLexicalTimingResources] =
+    useState<LexicalTimingResources | null>(null);
+  const [lexicalTimingStatus, setLexicalTimingStatus] = useState("");
+  const [lexicalTimingLoadFailed, setLexicalTimingLoadFailed] = useState(false);
   const logsRef = useRef<LogEntry[]>([]);
   const rsvpIndexRef = useRef(0);
   const baseSpeedBeforeMouseRef = useRef<number | null>(null);
@@ -195,12 +211,19 @@ export function ProvotypographerApp() {
     }
 
     const utterance = new SpeechSynthesisUtterance(normalizedValue);
-    const selectedVoice = window.speechSynthesis
+    const englishVoices = window.speechSynthesis
       .getVoices()
-      .find((voice) => voice.voiceURI === spec.motion.readAloud.voiceURI);
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
+      .filter((voice) => isEnglishLanguageTag(voice.lang));
+    const selectedVoice =
+      englishVoices.find(
+        (voice) => voice.voiceURI === spec.motion.readAloud.voiceURI,
+      ) ??
+      englishVoices.find((voice) => voice.default) ??
+      englishVoices[0];
+    if (!selectedVoice) {
+      return;
     }
+    utterance.voice = selectedVoice;
     utterance.rate = getReadAloudRate(normalizedValue, availableMs);
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
@@ -231,6 +254,73 @@ export function ProvotypographerApp() {
   }, []);
 
   useEffect(() => {
+    if (!spec.motion.rsvpLexicalTiming.enabled) {
+      if (lexicalTimingLoadFailed) setLexicalTimingLoadFailed(false);
+      if (lexicalTimingStatus) setLexicalTimingStatus("");
+    }
+  }, [
+    lexicalTimingLoadFailed,
+    lexicalTimingStatus,
+    spec.motion.rsvpLexicalTiming.enabled,
+  ]);
+
+  useEffect(() => {
+    if (
+      !spec.motion.rsvpLexicalTiming.enabled ||
+      lexicalTimingResources ||
+      lexicalTimingLoadFailed
+    ) {
+      return;
+    }
+    let cancelled = false;
+    setLexicalTimingStatus("Loading lexical timing data…");
+
+    const loadLexicalTiming = async () => {
+      const [paramsResult, predictionsResult] = await Promise.allSettled([
+        fetch(FIXATION_PARAMS_PATH).then((response) => {
+          if (!response.ok) throw new Error("Fixation parameters could not be loaded.");
+          return response.text();
+        }),
+        fetch(GAZE_DURATIONS_PATH).then((response) => {
+          if (!response.ok) throw new Error("Word predictions could not be loaded.");
+          return response.text();
+        }),
+      ]);
+      if (cancelled) return;
+      if (paramsResult.status === "rejected") {
+        setLexicalTimingLoadFailed(true);
+        setLexicalTimingStatus("Lexical timing data unavailable; using CPS timing.");
+        return;
+      }
+      try {
+        const params = parseFixationFormulaParamsCsv(paramsResult.value);
+        const predictedDefaultMsByWord =
+          predictionsResult.status === "fulfilled"
+            ? parsePredictedGazeDurationsCsv(predictionsResult.value)
+            : new Map<string, number>();
+        setLexicalTimingResources({ params, predictedDefaultMsByWord });
+        setLexicalTimingStatus(
+          predictionsResult.status === "rejected"
+            ? "Word predictions unavailable; using the lexical formula."
+            : "",
+        );
+      } catch {
+        setLexicalTimingLoadFailed(true);
+        setLexicalTimingStatus("Lexical timing data unavailable; using CPS timing.");
+      }
+    };
+
+    void loadLexicalTiming();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    lexicalTimingLoadFailed,
+    lexicalTimingResources,
+    spec.motion.rsvpLexicalTiming.enabled,
+  ]);
+
+  useEffect(() => {
     if (
       typeof window === "undefined" ||
       !("speechSynthesis" in window)
@@ -239,7 +329,11 @@ export function ProvotypographerApp() {
     }
 
     const loadVoices = () => {
-      setSpeechVoices(window.speechSynthesis.getVoices());
+      setSpeechVoices(
+        window.speechSynthesis
+          .getVoices()
+          .filter((voice) => isEnglishLanguageTag(voice.lang)),
+      );
     };
 
     loadVoices();
@@ -290,26 +384,56 @@ export function ProvotypographerApp() {
     if (spec.mode !== "rsvp" || !spec.motion.autoplay || !currentRsvpToken) {
       return undefined;
     }
-
-    const speedValue = Math.max(1, spec.motion.speed.value);
-    const msPerToken = Math.max(
-      20,
-      Math.round((currentRsvpAdvanceCharCount * 1000) / speedValue),
+    const advanceText = getAdvanceText(
+      rsvpTokens,
+      safeRsvpIndex,
+      effectiveAdvanceStep,
+      spec.tokenization.unit,
     );
+    const lexicalTimingRequested =
+      spec.motion.rsvpLexicalTiming.enabled && spec.tokenization.unit !== "char";
+    if (
+      lexicalTimingRequested &&
+      !lexicalTimingResources &&
+      !lexicalTimingLoadFailed
+    ) {
+      return undefined;
+    }
+    const baseDuration =
+      lexicalTimingRequested && lexicalTimingResources
+        ? getLexicalAdvanceDurationMs(
+            advanceText,
+            lexicalTimingResources,
+            spec.motion.rsvpLexicalTiming,
+          )
+        : Math.max(
+            20,
+            Math.round(
+              (currentRsvpAdvanceCharCount * 1000) /
+                Math.max(1, spec.motion.speed.value),
+            ),
+          );
     const extraDelay =
       spec.motion.pauseAtPunctuation.enabled &&
-      endsWithPausePunctuation(currentRsvpToken)
+      endsWithPausePunctuation(advanceText)
         ? Math.max(0, spec.motion.pauseAtPunctuation.delayMs)
         : 0;
-    return msPerToken + extraDelay;
+    return baseDuration + extraDelay;
   }, [
     currentRsvpAdvanceCharCount,
     currentRsvpToken,
+    effectiveAdvanceStep,
+    lexicalTimingLoadFailed,
+    lexicalTimingResources,
+    rsvpTokens,
+    safeRsvpIndex,
     spec.mode,
     spec.motion.autoplay,
     spec.motion.pauseAtPunctuation.delayMs,
     spec.motion.pauseAtPunctuation.enabled,
+    spec.motion.rsvpLexicalTiming,
     spec.motion.speed.value,
+    spec.tokenization.unit,
   ]);
   const effectiveHighlightJumpRateHz = clamp(
     rsvpHighlight.jumpRateHz,
@@ -439,7 +563,10 @@ export function ProvotypographerApp() {
 
   const handleViewportMouseMove = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      if (!spec.motion.rateControl.enabled) {
+      if (
+        !spec.motion.rateControl.enabled ||
+        spec.motion.rsvpLexicalTiming.enabled
+      ) {
         return;
       }
       if (baseSpeedBeforeMouseRef.current == null) {
@@ -482,6 +609,7 @@ export function ProvotypographerApp() {
       spec.motion.rateControl.invert,
       spec.motion.rateControl.maxCps,
       spec.motion.rateControl.minCps,
+      spec.motion.rsvpLexicalTiming.enabled,
       spec.motion.speed.value,
     ],
   );
@@ -516,11 +644,17 @@ export function ProvotypographerApp() {
   }, [safeRsvpIndex]);
 
   useEffect(() => {
-    if (spec.motion.rateControl.enabled) {
+    if (
+      spec.motion.rateControl.enabled &&
+      !spec.motion.rsvpLexicalTiming.enabled
+    ) {
       return;
     }
     baseSpeedBeforeMouseRef.current = null;
-  }, [spec.motion.rateControl.enabled]);
+  }, [
+    spec.motion.rateControl.enabled,
+    spec.motion.rsvpLexicalTiming.enabled,
+  ]);
 
   useEffect(() => {
     const allowedSteps = getViewportStepsForMode(spec.mode);
@@ -608,44 +742,24 @@ export function ProvotypographerApp() {
       return;
     }
 
-    let timeoutId: number;
-    let cancelled = false;
-
-    const tick = () => {
-      if (cancelled) {
-        return;
-      }
-      const result = advanceRsvp("tick");
-      if (!result) {
-        return;
-      }
-      const speedValue = Math.max(1, spec.motion.speed.value);
-      const msPerToken = Math.max(
-        20,
-        Math.round((result.advancedCharCount * 1000) / speedValue),
-      );
-      const extraDelay =
-        spec.motion.pauseAtPunctuation.enabled &&
-        endsWithPausePunctuation(result.token) &&
-        spec.mode === "rsvp"
-          ? Math.max(0, spec.motion.pauseAtPunctuation.delayMs)
-          : 0;
-      timeoutId = window.setTimeout(tick, msPerToken + extraDelay);
-    };
-    timeoutId = window.setTimeout(tick, 1);
+    if (currentRsvpTokenDurationMs == null) {
+      return;
+    }
+    const timeoutId = window.setTimeout(
+      () => advanceRsvp("tick"),
+      currentRsvpTokenDurationMs,
+    );
 
     return () => {
-      cancelled = true;
       window.clearTimeout(timeoutId);
     };
   }, [
     advanceRsvp,
+    currentRsvpTokenDurationMs,
     rsvpTokens.length,
+    safeRsvpIndex,
     spec.mode,
     spec.motion.autoplay,
-    spec.motion.pauseAtPunctuation.delayMs,
-    spec.motion.pauseAtPunctuation.enabled,
-    spec.motion.speed.value,
   ]);
 
   useEffect(() => {
@@ -692,6 +806,7 @@ export function ProvotypographerApp() {
 
   const applyViewportStep = useCallback((step: ViewportStep) => {
     setViewportStep(step);
+    setAdvanceStep(getViewportTokenCount(step));
     const tokenization = getTokenizationFromViewportStep(step);
     setSpec((prev) => ({
       ...prev,
@@ -949,10 +1064,16 @@ export function ProvotypographerApp() {
         rsvpHighlight?: Partial<ConditionSpec["typography"]["rsvpHighlight"]>;
       };
       ui?: SettingsJson["ui"];
-      motion?: Omit<Partial<ConditionSpec["motion"]>, "speed"> & {
+      motion?: Omit<
+        Partial<ConditionSpec["motion"]>,
+        "speed" | "rateControl" | "readAloud" | "rsvpLexicalTiming"
+      > & {
         speed?: { unit?: string; value?: number };
         rateControl?: Partial<ConditionSpec["motion"]["rateControl"]>;
         readAloud?: Partial<ConditionSpec["motion"]["readAloud"]>;
+        rsvpLexicalTiming?: Partial<
+          ConditionSpec["motion"]["rsvpLexicalTiming"]
+        >;
       };
     };
 
@@ -1142,6 +1263,33 @@ export function ProvotypographerApp() {
                   Number(parsed.motion?.speed?.value) ||
                     conditionSpec.motion.speed.value,
                 ),
+        },
+        rsvpLexicalTiming: {
+          ...conditionSpec.motion.rsvpLexicalTiming,
+          ...parsed.motion?.rsvpLexicalTiming,
+          enabled:
+            typeof parsed.motion?.rsvpLexicalTiming?.enabled === "boolean"
+              ? parsed.motion.rsvpLexicalTiming.enabled
+              : conditionSpec.motion.rsvpLexicalTiming.enabled,
+          baselineFixationMs: clamp(
+            numberOrDefault(
+              parsed.motion?.rsvpLexicalTiming?.baselineFixationMs,
+              conditionSpec.motion.rsvpLexicalTiming.baselineFixationMs,
+            ),
+            LEXICAL_BASELINE_MIN_MS,
+            LEXICAL_BASELINE_MAX_MS,
+          ),
+          includeSaccade:
+            typeof parsed.motion?.rsvpLexicalTiming?.includeSaccade === "boolean"
+              ? parsed.motion.rsvpLexicalTiming.includeSaccade
+              : conditionSpec.motion.rsvpLexicalTiming.includeSaccade,
+          saccadeMs: Math.max(
+            0,
+            numberOrDefault(
+              parsed.motion?.rsvpLexicalTiming?.saccadeMs,
+              conditionSpec.motion.rsvpLexicalTiming.saccadeMs,
+            ),
+          ),
         },
         pauseAtPunctuation: {
           ...conditionSpec.motion.pauseAtPunctuation,
@@ -1579,6 +1727,7 @@ export function ProvotypographerApp() {
                   allowedHighlightSteps={allowedHighlightSteps}
                   highlightStepIndex={highlightStepIndex}
                   setIsSpecModalOpen={setIsSpecModalOpen}
+                  lexicalTimingStatus={lexicalTimingStatus}
                 />
               </aside>
             </>

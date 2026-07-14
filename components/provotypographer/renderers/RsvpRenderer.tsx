@@ -122,6 +122,7 @@ export function RsvpRenderer({
                   allowBoundaryCrossing={allowBoundaryCrossing}
                   jumpRateHz={jumpRateHz}
                   jumpDurationMs={jumpDurationMs}
+                  centerAnchored
                 />
               </div>
             ) : (

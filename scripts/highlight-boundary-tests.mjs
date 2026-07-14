@@ -28,7 +28,29 @@ const {
   findTextPosition,
   getHighlightRanges,
   getHighlightSegments,
+  getHighlightSpanStyle,
+  isEnglishLanguageTag,
 } = await import("../lib/provotypographer/core.ts");
+
+assert.equal(isEnglishLanguageTag("en-US"), true);
+assert.equal(isEnglishLanguageTag("en_GB"), true);
+assert.equal(isEnglishLanguageTag("en"), true);
+assert.equal(isEnglishLanguageTag("fr-CA"), false);
+assert.equal(isEnglishLanguageTag(""), false);
+
+for (const style of ["bold", "background", "outline"]) {
+  const spanStyle = getHighlightSpanStyle(style);
+  assert.equal(
+    spanStyle.paddingInline,
+    undefined,
+    `${style} highlighting must not add horizontal padding`,
+  );
+  assert.equal(
+    spanStyle.fontWeight,
+    undefined,
+    `${style} highlighting must not change font metrics`,
+  );
+}
 
 assert.equal(
   getHighlightSegments("the last. First", "word", 2, 1, false).highlight,

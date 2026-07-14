@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:highlight": "node --no-warnings --experimental-strip-types scripts/highlight-boundary-tests.mjs",
+    "test:lexical": "node --no-warnings --experimental-strip-types scripts/lexical-timing-tests.mjs",
     "audit:features": "node scripts/feature-audit.mjs"
   },
   "dependencies": {

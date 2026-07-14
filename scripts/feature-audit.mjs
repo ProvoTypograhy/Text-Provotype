@@ -433,6 +433,53 @@ try {
     return `Counter before=${before}, after=${after}.`;
   });
 
+  await runCheck("RSVP", "Autoplay continues across equal-duration words", async () => {
+    await setCheckbox(page, "Autoplay", false);
+    await setCheckbox(page, "Lexical timing", false);
+    await page.locator("textarea").fill("same just next word test okay");
+    await page.getByRole("button", { name: "Reset" }).click();
+    await setRange(page, "Speed (chars/sec):", 80);
+    await setCheckbox(page, "Autoplay", true);
+    await expectPoll(
+      async () => {
+        const counter = await getCounter(page);
+        return counter !== "1/6" && counter !== "2/6";
+      },
+      "Autoplay stopped after the first equal-duration transition.",
+      1500,
+    );
+    const counter = await getCounter(page);
+    await setCheckbox(page, "Autoplay", false);
+    await page.locator("textarea").fill(
+      "One. Two words. Three words here. Four more words.\n\nSecond paragraph here.",
+    );
+    return `Autoplay progressed beyond the first equal-duration transition (${counter}).`;
+  });
+
+  await runCheck("RSVP", "Lexical timing controls and export", async () => {
+    await setCheckbox(page, "Autoplay", false);
+    await setCheckbox(page, "Lexical timing", true);
+    await setRange(page, "Baseline fixation (ms):", 300);
+    await expectPoll(
+      async () => !(await page.getByText("Loading lexical timing data…").count()),
+      "Lexical timing data did not finish loading.",
+      5000,
+    );
+    const speedDisabled = await page.evaluate(() =>
+      window.findLabeledControl("Speed (chars/sec):", "input").disabled,
+    );
+    const mouseDisabled = await page.evaluate(() =>
+      window.findLabeledControl("Enable Mouse Y", "input").disabled,
+    );
+    const payload = await getSettingsPayload(page);
+    expect(speedDisabled, "CPS speed remained enabled during lexical timing.");
+    expect(mouseDisabled, "Mouse Y remained enabled during lexical timing.");
+    expect(payload.motion.rsvpLexicalTiming.enabled === true, "Lexical toggle was not exported.");
+    expect(payload.motion.rsvpLexicalTiming.baselineFixationMs === 300, "Lexical baseline was not exported.");
+    await setCheckbox(page, "Lexical timing", false);
+    return "Lexical controls loaded, disabled CPS controls, and exported settings.";
+  });
+
   await runCheck("RSVP", "Reset returns index to first token", async () => {
     await setCheckbox(page, "Autoplay", false);
     await viewportClick(page);
@@ -458,8 +505,12 @@ try {
         payload.tokenization.unit === check.unit && payload.tokenization.chunkSize === check.chunkSize,
         `Slider ${check.slider} expected ${check.unit}-${check.chunkSize}, got ${payload.tokenization.unit}-${payload.tokenization.chunkSize}.`,
       );
+      expect(
+        payload.ui.advanceStep === check.chunkSize,
+        `Slider ${check.slider} expected advance ${check.chunkSize}, got ${payload.ui.advanceStep}.`,
+      );
     }
-    return "Representative viewport steps mapped to expected tokenization.";
+    return "Representative viewport steps mapped to tokenization and maximum advance.";
   });
 
   await runCheck("Viewport", "Advance step caps to viewport size", async () => {
@@ -985,6 +1036,7 @@ try {
     expect(payload.ui.viewportStep === "word-1", `Viewport step was ${payload.ui.viewportStep}.`);
     expect(payload.ui.viewportWidthPercent === 100, `Viewport width was ${payload.ui.viewportWidthPercent}.`);
     expect(payload.ui.viewportHeightPercent === 100, `Viewport height was ${payload.ui.viewportHeightPercent}.`);
+    expect(payload.motion.rsvpLexicalTiming.includeSaccade === false, "Saccade timing was enabled by default.");
     return "Defaults restored.";
   });
 

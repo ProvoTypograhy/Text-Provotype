@@ -44,6 +44,12 @@ export type ConditionSpec = {
   motion: {
     autoplay: boolean;
     speed: { unit: "cps" | "pxps"; value: number };
+    rsvpLexicalTiming: {
+      enabled: boolean;
+      baselineFixationMs: number;
+      includeSaccade: boolean;
+      saccadeMs: number;
+    };
     rateControl: {
       enabled: boolean;
       source: "mouseY";
@@ -106,6 +112,12 @@ export const conditionSpec: ConditionSpec = {
   motion: {
     autoplay: true,
     speed: { unit: "cps", value: 10 },
+    rsvpLexicalTiming: {
+      enabled: false,
+      baselineFixationMs: 218.498582640921,
+      includeSaccade: false,
+      saccadeMs: 30,
+    },
     rateControl: {
       enabled: false,
       source: "mouseY",

@@ -74,6 +74,7 @@ Behavioral details:
 
 - The main source text is editable directly in a textarea.
 - On first load, the app fetches [public/default-text.txt](/Users/dylanb/Documents/Github/text-interface/public/default-text.txt).
+- The bundled sample is an excerpt from Upton Sinclair's 1928 novel [*Boston: A Novel*](https://openlibrary.org/works/OL115059W). The excerpt follows Cornelia Thornwell and her family around Governor Josiah Thornwell's death and funeral.
 - If the default file cannot be loaded, the app silently keeps the current text state.
 
 ### Viewport Step System
@@ -100,8 +101,9 @@ Operational meaning:
 Advance step exists only for RSVP playback semantics.
 
 - Range is `1` to the current viewport token count.
+- Changing the viewport step resets the advance step to that maximum.
 - A viewport showing `3 words` can still advance `1 word`, `2 words`, or `3 words` per tick.
-- Actual playback timing uses the character count spanned by the advance step so larger advances take longer at a fixed cps value.
+- CPS playback uses the character count spanned by the advance step; lexical playback sums the timings of words spanned by the advance step.
 
 ### Playback Controls
 
@@ -111,6 +113,8 @@ RSVP:
 - Play/pause button
 - Reset button
 - Character-per-second speed slider
+- Optional lexical timing with an adjustable baseline fixation duration
+- Optional fixed 30 ms saccade contribution per advanced word
 - Optional punctuation pause
 - Punctuation delay slider
 - Manual stepping through click or `Space`
@@ -311,6 +315,12 @@ type ConditionSpec = {
   motion: {
     autoplay: boolean;
     speed: { unit: "cps" | "pxps"; value: number };
+    rsvpLexicalTiming: {
+      enabled: boolean;
+      baselineFixationMs: number;
+      includeSaccade: boolean;
+      saccadeMs: number;
+    };
     rateControl: {
       enabled: boolean;
       source: "mouseY";
@@ -355,13 +365,14 @@ Research implication:
 
 ### RSVP Timing
 
-RSVP timing is computed from:
+RSVP has two timing paths:
 
-- `advancedCharCount / cps`
-- plus optional punctuation delay
-- with a minimum per-token floor to avoid zero-duration updates
+- CPS timing uses `advancedCharCount / cps`, with a minimum duration floor.
+- Lexical timing looks up the ELP word prediction, scales it by the selected baseline fixation time, and falls back to the supplied length/frequency model with `Log_Freq_HAL = 0` for unknown words.
 
-This means two conditions with the same cps but different advance sizes will not produce the same number of display events per second.
+Lexical timing is off by default. When enabled, predictions are clamped to 80–900 ms per word and may include 30 ms of saccade time per word. Word timings are summed over the units advanced, including words inside sentence and paragraph steps. Letter steps retain CPS timing. The optional punctuation delay is added once after the base duration.
+
+The model data is loaded from `public/data/fixation_formula_params.csv` and `public/data/predicted_gaze_durations_default.csv`. Known-word lookup is case-insensitive and ignores surrounding punctuation. If the prediction table cannot be loaded, the formula handles every word; if the parameters are unavailable, playback falls back to CPS timing.
 
 ### Continuous Motion
 
