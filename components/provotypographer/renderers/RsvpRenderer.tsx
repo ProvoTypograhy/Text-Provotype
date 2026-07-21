@@ -6,6 +6,7 @@ import {
 } from "@/lib/provotypographer/core";
 import { AnimatedHighlightedToken } from "./HighlightedToken";
 import { SentenceStructuredRenderer } from "./SentenceStructuredRenderer";
+import { StructuredHighlightedToken } from "./StructuredHighlightedToken";
 
 export function RsvpRenderer({
   spec,
@@ -81,16 +82,39 @@ export function RsvpRenderer({
         {token ? (
           isSentenceOrParagraph ? (
             useSentenceStructuredLayout ? (
-              <SentenceStructuredRenderer
-                token={token}
-                staircaseEnabled={spec.typography.paragraphStaircase.enabled}
-                indentStepCh={spec.typography.paragraphStaircase.indentStepCh}
-                indentMode={spec.typography.paragraphStaircase.indentMode}
-                maxWidthCh={spec.typography.paragraphStaircase.maxWidthCh}
-                fontSizePx={spec.typography.fontSizePx}
-                lineWidthPx={spec.typography.lineWidthPx}
-                sentenceMarkers={spec.typography.sentenceMarkers}
-              />
+              highlightEnabled ? (
+                <StructuredHighlightedToken
+                  key={`${token}-${highlightUnit}-${highlightSize}`}
+                  unit={highlightUnit}
+                  size={highlightSize}
+                  style={highlightStyle}
+                  allowBoundaryCrossing={allowBoundaryCrossing}
+                  jumpRateHz={jumpRateHz}
+                  jumpDurationMs={jumpDurationMs}
+                >
+                  <SentenceStructuredRenderer
+                    token={token}
+                    staircaseEnabled={spec.typography.paragraphStaircase.enabled}
+                    indentStepCh={spec.typography.paragraphStaircase.indentStepCh}
+                    indentMode={spec.typography.paragraphStaircase.indentMode}
+                    maxWidthCh={spec.typography.paragraphStaircase.maxWidthCh}
+                    fontSizePx={spec.typography.fontSizePx}
+                    lineWidthPx={spec.typography.lineWidthPx}
+                    sentenceMarkers={spec.typography.sentenceMarkers}
+                  />
+                </StructuredHighlightedToken>
+              ) : (
+                <SentenceStructuredRenderer
+                  token={token}
+                  staircaseEnabled={spec.typography.paragraphStaircase.enabled}
+                  indentStepCh={spec.typography.paragraphStaircase.indentStepCh}
+                  indentMode={spec.typography.paragraphStaircase.indentMode}
+                  maxWidthCh={spec.typography.paragraphStaircase.maxWidthCh}
+                  fontSizePx={spec.typography.fontSizePx}
+                  lineWidthPx={spec.typography.lineWidthPx}
+                  sentenceMarkers={spec.typography.sentenceMarkers}
+                />
+              )
             ) : (
               <div className="whitespace-pre-wrap">
                 {highlightEnabled ? (
