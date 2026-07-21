@@ -5,6 +5,8 @@ import {
   FONT_FAMILY_OPTIONS,
   HIGHLIGHT_JUMP_RATE_MAX,
   HIGHLIGHT_JUMP_RATE_MIN,
+  RSVP_BLANK_INTERVAL_MAX_MS,
+  RSVP_BLANK_INTERVAL_MIN_MS,
   VIEWPORT_SIZE_MAX_PERCENT,
   VIEWPORT_SIZE_MIN_PERCENT,
   VIEWPORT_STEP_LABELS,
@@ -480,6 +482,32 @@ export function SettingsPanel({
                                     </option>
                                   ))}
                                 </select>
+                              </label>
+                              <label className="flex flex-col gap-1">
+                                Blank interval (ms):{" "}
+                                {spec.motion.rsvpBlankIntervalMs}
+                                <input
+                                  className="w-full"
+                                  type="range"
+                                  min={RSVP_BLANK_INTERVAL_MIN_MS}
+                                  max={RSVP_BLANK_INTERVAL_MAX_MS}
+                                  step={25}
+                                  disabled={spec.mode !== "rsvp"}
+                                  value={spec.motion.rsvpBlankIntervalMs}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      motion: {
+                                        ...prev.motion,
+                                        rsvpBlankIntervalMs: clamp(
+                                          Number(e.target.value) || 0,
+                                          RSVP_BLANK_INTERVAL_MIN_MS,
+                                          RSVP_BLANK_INTERVAL_MAX_MS,
+                                        ),
+                                      },
+                                    }))
+                                  }
+                                />
                               </label>
                               <label className="flex flex-col gap-1">
                                 Punctuation Delay (ms):{" "}

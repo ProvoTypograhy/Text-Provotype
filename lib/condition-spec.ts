@@ -61,6 +61,7 @@ export type ConditionSpec = {
     direction: "vertical" | "horizontal";
     wrapVerticalText: boolean;
     progression: "continuous" | "step";
+    rsvpBlankIntervalMs: number;
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
     readAloud: { enabled: boolean; voiceURI: string };
   };
@@ -129,6 +130,7 @@ export const conditionSpec: ConditionSpec = {
     direction: "horizontal",
     wrapVerticalText: true,
     progression: "step",
+    rsvpBlankIntervalMs: 0,
     pauseAtPunctuation: { enabled: false, delayMs: 250 },
     readAloud: { enabled: false, voiceURI: "" },
   },

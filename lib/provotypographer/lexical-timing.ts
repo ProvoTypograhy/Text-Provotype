@@ -113,7 +113,7 @@ export function normalizeLexicalWord(value: string): string {
 
 export function extractLexicalWords(value: string): string[] {
   return (
-    value.match(/[\p{L}\p{N}]+(?:['\u2018\u2019\u2010-\u2015-][\p{L}\p{N}]+)*/gu) ?? []
+    value.match(/[\p{L}\p{N}]+(?:['\u2018\u2019][\p{L}\p{N}]+)*/gu) ?? []
   )
     .map(normalizeLexicalWord)
     .filter(Boolean);

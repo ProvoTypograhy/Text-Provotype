@@ -58,6 +58,8 @@ export const VIEWPORT_SIZE_MIN_PERCENT = 1;
 export const VIEWPORT_SIZE_MAX_PERCENT = 100;
 export const SPEED_MIN_CPS = 1;
 export const SPEED_MAX_CPS = 80;
+export const RSVP_BLANK_INTERVAL_MIN_MS = -1000;
+export const RSVP_BLANK_INTERVAL_MAX_MS = 1000;
 export const HIGHLIGHT_JUMP_RATE_MIN = 0.25;
 export const HIGHLIGHT_JUMP_RATE_MAX = 80;
 export const SHARE_HASH_PREFIX = "share=";
@@ -109,6 +111,30 @@ export const VIEWPORT_STEP_LABELS: Record<ViewportStep, string> = {
   "paragraph-2": "2 P",
   "paragraph-3": "3 P",
 };
+
+export function getRsvpPhaseTiming(
+  displayDurationMs: number,
+  blankIntervalMs: number,
+) {
+  const safeDisplayDurationMs = Math.max(20, displayDurationMs);
+  const safeBlankIntervalMs = clamp(
+    blankIntervalMs,
+    RSVP_BLANK_INTERVAL_MIN_MS,
+    RSVP_BLANK_INTERVAL_MAX_MS,
+  );
+  const nextOnsetMs = Math.max(20, safeDisplayDurationMs + safeBlankIntervalMs);
+
+  return {
+    displayDurationMs: safeDisplayDurationMs,
+    nextOnsetMs,
+    blankDurationMs:
+      safeBlankIntervalMs > 0 ? safeBlankIntervalMs : 0,
+    overlapDurationMs:
+      safeBlankIntervalMs < 0
+        ? Math.max(0, safeDisplayDurationMs - nextOnsetMs)
+        : 0,
+  };
+}
 
 export function getViewportStepsForMode(mode: ReaderMode) {
   return mode === "continuous" ? CONTINUOUS_STEPS : RSVP_STEPS;

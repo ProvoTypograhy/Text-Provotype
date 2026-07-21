@@ -29,7 +29,15 @@ assert.equal(normalizeLexicalWord("“DON’T!”"), "don't");
 assert.deepEqual(extractLexicalWords("Hello, don’t stop—now."), [
   "hello",
   "don't",
-  "stop-now",
+  "stop",
+  "now",
+]);
+assert.deepEqual(extractLexicalWords("well-known mother-in-law"), [
+  "well",
+  "known",
+  "mother",
+  "in",
+  "law",
 ]);
 
 const knownDefault = getPredictedFixationMs("a", resources, params.defaultBaselineMs);
@@ -68,6 +76,30 @@ const withSaccades = getLexicalAdvanceDurationMs("a world", resources, {
   saccadeMs: 30,
 });
 assert.equal(withSaccades - withoutSaccades, 60);
+
+const compoundResources = {
+  params,
+  predictedDefaultMsByWord: new Map([
+    ["alpha", 120],
+    ["beta", 180],
+  ]),
+};
+assert.equal(
+  getLexicalAdvanceDurationMs("alpha-beta", compoundResources, {
+    baselineFixationMs: params.defaultBaselineMs,
+    includeSaccade: false,
+    saccadeMs: 30,
+  }),
+  300,
+);
+assert.equal(
+  getLexicalAdvanceDurationMs("alpha-beta", compoundResources, {
+    baselineFixationMs: params.defaultBaselineMs,
+    includeSaccade: true,
+    saccadeMs: 30,
+  }),
+  360,
+);
 assert.equal(
   getLexicalAdvanceDurationMs("?!", resources, {
     baselineFixationMs: params.defaultBaselineMs,

@@ -19,6 +19,8 @@ import {
   HIGHLIGHT_JUMP_RATE_MIN,
   MIN_SETTINGS_WIDTH,
   MIN_VIEWPORT_WIDTH,
+  RSVP_BLANK_INTERVAL_MAX_MS,
+  RSVP_BLANK_INTERVAL_MIN_MS,
   RSVP_STEPS,
   SHARE_HASH_PREFIX,
   SHARE_URL_MAX_LENGTH,
@@ -36,6 +38,7 @@ import {
   getHighlightPositionCount,
   getHighlightSegments,
   getRsvpDisplayToken,
+  getRsvpPhaseTiming,
   getStepIndex,
   getTokenizationFromViewportStep,
   getViewportStepFromTokenization,
@@ -110,6 +113,10 @@ export function ProvotypographerApp() {
   const [viewportStep, setViewportStep] = useState<ViewportStep>("word-1");
   const [advanceStep, setAdvanceStep] = useState(1);
   const [rsvpIndex, setRsvpIndex] = useState(0);
+  const [isRsvpBlank, setIsRsvpBlank] = useState(false);
+  const [overlappingRsvpTokens, setOverlappingRsvpTokens] = useState<
+    Array<{ id: number; token: string }>
+  >([]);
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
   const [isSettingsVisible, setIsSettingsVisible] = useState(true);
   const [settingsWidth, setSettingsWidth] = useState(420);
@@ -145,6 +152,8 @@ export function ProvotypographerApp() {
   const loopCaptureRepaintRef = useRef<HTMLDivElement | null>(null);
   const loopCaptureRepaintFrameRef = useRef<number | null>(null);
   const readAloudTimeoutsRef = useRef<number[]>([]);
+  const overlapTimeoutsRef = useRef<number[]>([]);
+  const overlapIdRef = useRef(0);
   const viewportResizeStartRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -700,6 +709,14 @@ export function ProvotypographerApp() {
         return null;
       }
       const currentIndex = rsvpIndexRef.current;
+      if (event === "manual") {
+        overlapTimeoutsRef.current.forEach((timeoutId) =>
+          window.clearTimeout(timeoutId),
+        );
+        overlapTimeoutsRef.current = [];
+        setOverlappingRsvpTokens([]);
+        setIsRsvpBlank(false);
+      }
       const next = (currentIndex + effectiveAdvanceStep) % rsvpTokens.length;
       rsvpIndexRef.current = next;
       setRsvpIndex(next);
@@ -745,22 +762,79 @@ export function ProvotypographerApp() {
     if (currentRsvpTokenDurationMs == null) {
       return;
     }
-    const timeoutId = window.setTimeout(
-      () => advanceRsvp("tick"),
+    setIsRsvpBlank(false);
+    const phaseTiming = getRsvpPhaseTiming(
       currentRsvpTokenDurationMs,
+      spec.motion.rsvpBlankIntervalMs,
     );
+    let blankTimeoutId: number | undefined;
+
+    if (phaseTiming.blankDurationMs > 0) {
+      blankTimeoutId = window.setTimeout(
+        () => setIsRsvpBlank(true),
+        phaseTiming.displayDurationMs,
+      );
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (phaseTiming.overlapDurationMs > 0) {
+        const overlapId = overlapIdRef.current + 1;
+        overlapIdRef.current = overlapId;
+        setOverlappingRsvpTokens((tokens) => [
+          ...tokens,
+          { id: overlapId, token: currentRsvpToken },
+        ]);
+        const overlapTimeoutId = window.setTimeout(() => {
+          setOverlappingRsvpTokens((tokens) =>
+            tokens.filter((token) => token.id !== overlapId),
+          );
+          overlapTimeoutsRef.current = overlapTimeoutsRef.current.filter(
+            (id) => id !== overlapTimeoutId,
+          );
+        }, phaseTiming.overlapDurationMs);
+        overlapTimeoutsRef.current.push(overlapTimeoutId);
+      }
+      setIsRsvpBlank(false);
+      advanceRsvp("tick");
+    }, phaseTiming.nextOnsetMs);
 
     return () => {
       window.clearTimeout(timeoutId);
+      if (blankTimeoutId != null) {
+        window.clearTimeout(blankTimeoutId);
+      }
     };
   }, [
     advanceRsvp,
+    currentRsvpToken,
     currentRsvpTokenDurationMs,
     rsvpTokens.length,
     safeRsvpIndex,
     spec.mode,
     spec.motion.autoplay,
+    spec.motion.rsvpBlankIntervalMs,
   ]);
+
+  useEffect(() => {
+    if (spec.mode === "rsvp" && spec.motion.autoplay) {
+      return;
+    }
+    overlapTimeoutsRef.current.forEach((timeoutId) =>
+      window.clearTimeout(timeoutId),
+    );
+    overlapTimeoutsRef.current = [];
+    setOverlappingRsvpTokens([]);
+    setIsRsvpBlank(false);
+  }, [spec.mode, spec.motion.autoplay]);
+
+  useEffect(
+    () => () => {
+      overlapTimeoutsRef.current.forEach((timeoutId) =>
+        window.clearTimeout(timeoutId),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!canManualAdvance) {
@@ -1291,6 +1365,14 @@ export function ProvotypographerApp() {
             ),
           ),
         },
+        rsvpBlankIntervalMs: clamp(
+          numberOrDefault(
+            parsed.motion?.rsvpBlankIntervalMs,
+            conditionSpec.motion.rsvpBlankIntervalMs,
+          ),
+          RSVP_BLANK_INTERVAL_MIN_MS,
+          RSVP_BLANK_INTERVAL_MAX_MS,
+        ),
         pauseAtPunctuation: {
           ...conditionSpec.motion.pauseAtPunctuation,
           ...parsed.motion?.pauseAtPunctuation,
@@ -1612,6 +1694,10 @@ export function ProvotypographerApp() {
                         spec={spec}
                         viewportStep={viewportStep}
                         rsvpToken={currentRsvpToken}
+                        overlappingRsvpTokens={overlappingRsvpTokens.map(
+                          ({ token }) => token,
+                        )}
+                        rsvpBlank={isRsvpBlank}
                         continuousText={text}
                         highlightJumpRateHz={effectiveHighlightJumpRateHz}
                         resetContinuousHighlightKey={resetContinuousHighlightKey}

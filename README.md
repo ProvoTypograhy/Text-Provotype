@@ -30,7 +30,7 @@ The interface is designed around the idea of a reading condition as a serialized
 
 In practice, the tool supports experiments involving:
 
-- Temporal manipulation: autoplay, speed, punctuation delay, mouse-driven rate control.
+- Temporal manipulation: autoplay, speed, inter-segment blank/overlap timing, punctuation delay, mouse-driven rate control.
 - Segmentation manipulation: characters, words, sentences, paragraphs, grouped display windows.
 - Spatial manipulation: viewport width/height cropping, alignment, line width, staircase indentation.
 - Attentional cueing: highlight windows, sentence/line markers, central fixation in RSVP.
@@ -117,6 +117,7 @@ RSVP:
 - Optional fixed 30 ms saccade contribution per advanced word
 - Optional punctuation pause
 - Punctuation delay slider
+- Inter-segment timing from -1000 to 1000 ms; positive values show a blank interval and negative values overlap consecutive segments
 - Manual stepping through click or `Space`
 
 Continuous:
@@ -332,6 +333,7 @@ type ConditionSpec = {
     direction: "vertical" | "horizontal";
     wrapVerticalText: boolean;
     progression: "continuous" | "step";
+    rsvpBlankIntervalMs: number;
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
   };
 };
@@ -372,7 +374,9 @@ RSVP has two timing paths:
 
 Lexical timing is off by default. When enabled, predictions are clamped to 80–900 ms per word and may include 30 ms of saccade time per word. Word timings are summed over the units advanced, including words inside sentence and paragraph steps. Letter steps retain CPS timing. The optional punctuation delay is added once after the base duration.
 
-The model data is loaded from `public/data/fixation_formula_params.csv` and `public/data/predicted_gaze_durations_default.csv`. Known-word lookup is case-insensitive and ignores surrounding punctuation. If the prediction table cannot be loaded, the formula handles every word; if the parameters are unavailable, playback falls back to CPS timing.
+The inter-segment timing is applied after the base duration. Positive values leave the viewport blank before the next segment appears. Negative values start the next segment early and keep the preceding segment visible for the overlap. The next onset retains a 20 ms safety floor.
+
+The model data is loaded from `public/data/fixation_formula_params.csv` and `public/data/predicted_gaze_durations_default.csv`. Known-word lookup is case-insensitive and ignores surrounding punctuation. Hyphenated compounds are split at hyphens and each component is looked up and timed separately. If the prediction table cannot be loaded, the formula handles every word; if the parameters are unavailable, playback falls back to CPS timing.
 
 ### Continuous Motion
 

@@ -9,6 +9,8 @@ export function Viewport({
   spec,
   viewportStep,
   rsvpToken,
+  overlappingRsvpTokens,
+  rsvpBlank,
   continuousText,
   highlightJumpRateHz,
   rsvpHighlightJumpDurationMs,
@@ -21,6 +23,8 @@ export function Viewport({
   spec: ConditionSpec;
   viewportStep: ViewportStep;
   rsvpToken: string;
+  overlappingRsvpTokens: string[];
+  rsvpBlank: boolean;
   continuousText: string;
   highlightJumpRateHz: number;
   rsvpHighlightJumpDurationMs?: number;
@@ -51,15 +55,35 @@ export function Viewport({
           resetHighlightKey={resetContinuousHighlightKey}
         />
       ) : (
-        <RsvpRenderer
-          spec={spec}
-          token={rsvpToken}
-          viewportStep={viewportStep}
-          jumpRateHz={highlightJumpRateHz}
-          jumpDurationMs={rsvpHighlightJumpDurationMs}
-        />
+        <div className="relative h-full w-full">
+          {!rsvpBlank ? (
+            <div className="absolute inset-0">
+              <RsvpRenderer
+                spec={spec}
+                token={rsvpToken}
+                viewportStep={viewportStep}
+                jumpRateHz={highlightJumpRateHz}
+                jumpDurationMs={rsvpHighlightJumpDurationMs}
+              />
+            </div>
+          ) : null}
+          {overlappingRsvpTokens.map((token, index) => (
+            <div
+              key={`${token}-${index}`}
+              className="pointer-events-none absolute inset-0"
+              aria-hidden="true"
+            >
+              <RsvpRenderer
+                spec={spec}
+                token={token}
+                viewportStep={viewportStep}
+                jumpRateHz={highlightJumpRateHz}
+                jumpDurationMs={rsvpHighlightJumpDurationMs}
+              />
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
-
