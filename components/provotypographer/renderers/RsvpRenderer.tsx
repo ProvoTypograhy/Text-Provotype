@@ -14,12 +14,16 @@ export function RsvpRenderer({
   viewportStep,
   jumpRateHz,
   jumpDurationMs,
+  flowHighlightText,
+  flowSliceTokenCount,
 }: {
   spec: ConditionSpec;
   token: string;
   viewportStep: ViewportStep;
   jumpRateHz: number;
   jumpDurationMs?: number;
+  flowHighlightText?: string;
+  flowSliceTokenCount?: number;
 }) {
   const alignment = spec.typography.alignment;
   const textAlign = alignment === "justify" ? "justify" : alignment;
@@ -44,6 +48,12 @@ export function RsvpRenderer({
   const multilineToken = viewportStep.startsWith("sentence")
     ? formatTokenAsSentenceLines(token)
     : token;
+  const multilineFlowHighlightText =
+    flowHighlightText == null
+      ? undefined
+      : viewportStep.startsWith("sentence")
+        ? formatTokenAsSentenceLines(flowHighlightText)
+        : flowHighlightText;
   const highlightUnit = rsvpHighlight.unit;
   const highlightSize = rsvpHighlight.size;
   const highlightStyle = rsvpHighlight.style;
@@ -91,6 +101,7 @@ export function RsvpRenderer({
                   allowBoundaryCrossing={allowBoundaryCrossing}
                   jumpRateHz={jumpRateHz}
                   jumpDurationMs={jumpDurationMs}
+                  limitToRsvpFlowSlice={flowSliceTokenCount != null}
                 >
                   <SentenceStructuredRenderer
                     token={token}
@@ -101,6 +112,8 @@ export function RsvpRenderer({
                     fontSizePx={spec.typography.fontSizePx}
                     lineWidthPx={spec.typography.lineWidthPx}
                     sentenceMarkers={spec.typography.sentenceMarkers}
+                    flowSliceTokenCount={flowSliceTokenCount}
+                    flowSliceTokenUnit={spec.tokenization.unit}
                   />
                 </StructuredHighlightedToken>
               ) : (
@@ -113,6 +126,8 @@ export function RsvpRenderer({
                   fontSizePx={spec.typography.fontSizePx}
                   lineWidthPx={spec.typography.lineWidthPx}
                   sentenceMarkers={spec.typography.sentenceMarkers}
+                  flowSliceTokenCount={flowSliceTokenCount}
+                  flowSliceTokenUnit={spec.tokenization.unit}
                 />
               )
             ) : (
@@ -127,6 +142,9 @@ export function RsvpRenderer({
                     allowBoundaryCrossing={allowBoundaryCrossing}
                     jumpRateHz={jumpRateHz}
                     jumpDurationMs={jumpDurationMs}
+                    flowHighlightPrefixLength={
+                      multilineFlowHighlightText?.length
+                    }
                     preserveWhitespace
                   />
                 ) : (
@@ -146,6 +164,7 @@ export function RsvpRenderer({
                   allowBoundaryCrossing={allowBoundaryCrossing}
                   jumpRateHz={jumpRateHz}
                   jumpDurationMs={jumpDurationMs}
+                  flowHighlightPrefixLength={flowHighlightText?.length}
                   centerAnchored
                 />
               </div>

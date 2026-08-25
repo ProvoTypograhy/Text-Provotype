@@ -10,6 +10,7 @@ import {
   splitParagraphIntoSentences,
   splitTokenIntoParagraphs,
   type RenderedLineRect,
+  type TokenizationUnit,
 } from "@/lib/provotypographer/core";
 
 function LineMarkerParagraph({
@@ -22,6 +23,7 @@ function LineMarkerParagraph({
     key: string;
     sentence: string;
     sentenceStyle: CSSProperties;
+    inFlowSlice: boolean;
   }>;
   sentenceMarkers: ConditionSpec["typography"]["sentenceMarkers"];
   showStartMarker: boolean;
@@ -127,6 +129,7 @@ function LineMarkerParagraph({
             sentenceRefs.current[sentenceIndex] = node;
           }}
           className="max-w-full"
+          data-rsvp-flow-slice={layout.inFlowSlice ? "true" : undefined}
           style={layout.sentenceStyle}
         >
           {layout.sentence}
@@ -145,6 +148,8 @@ export function SentenceStructuredRenderer({
   fontSizePx,
   lineWidthPx,
   sentenceMarkers,
+  flowSliceTokenCount = 0,
+  flowSliceTokenUnit,
 }: {
   token: string;
   staircaseEnabled: boolean;
@@ -154,8 +159,19 @@ export function SentenceStructuredRenderer({
   fontSizePx: number;
   lineWidthPx: number;
   sentenceMarkers: ConditionSpec["typography"]["sentenceMarkers"];
+  flowSliceTokenCount?: number;
+  flowSliceTokenUnit?: TokenizationUnit;
 }) {
   const paragraphs = splitTokenIntoParagraphs(token);
+  const paragraphSentenceOffsets = paragraphs.map((_, paragraphIndex) =>
+    paragraphs
+      .slice(0, paragraphIndex)
+      .reduce(
+        (count, previousParagraph) =>
+          count + splitParagraphIntoSentences(previousParagraph).length,
+        0,
+      ),
+  );
   const safeIndentStepCh = Math.max(0, indentStepCh);
   const staircaseWidthCh = getApproximateStaircaseWidthCh({
     maxWidthCh,
@@ -192,9 +208,20 @@ export function SentenceStructuredRenderer({
   }
 
   return (
-    <div className="space-y-4 whitespace-normal text-left">
+    <div
+      className="space-y-4 whitespace-normal text-left"
+      data-structured-rsvp-text="true"
+    >
       {paragraphs.map((paragraph, paragraphIndex) => {
         const sentences = splitParagraphIntoSentences(paragraph);
+        const paragraphInFlowSlice =
+          flowSliceTokenUnit === "paragraph" &&
+          paragraphIndex < flowSliceTokenCount;
+        const sentenceInFlowSlice = (sentenceIndex: number) =>
+          paragraphInFlowSlice ||
+          (flowSliceTokenUnit === "sentence" &&
+            (paragraphSentenceOffsets[paragraphIndex] ?? 0) + sentenceIndex <
+              flowSliceTokenCount);
         const sentenceCount = sentences.length;
         const effectiveMarkerMode =
           sentenceMarkers.mode === "line" ? "line" : "sentence";
@@ -213,7 +240,10 @@ export function SentenceStructuredRenderer({
               })
             : null;
         return (
-          <div key={`${paragraphIndex}-${paragraph.slice(0, 32)}`}>
+          <div
+            key={`${paragraphIndex}-${paragraph.slice(0, 32)}`}
+            data-rsvp-flow-slice={paragraphInFlowSlice ? "true" : undefined}
+          >
             {useLineLayout && paragraphLines ? (
               paragraphLines.map((line, lineIndex) => {
                 const lineIndent =
@@ -263,6 +293,12 @@ export function SentenceStructuredRenderer({
                       </span>
                     ) : null}
                     {line.parts.map((part, partIndex) => {
+                      const leadingSeparator = part.isSentenceStart
+                        ? part.text.match(/^\s+/u)?.[0] ?? ""
+                        : "";
+                      const visibleText = leadingSeparator
+                        ? part.text.slice(leadingSeparator.length)
+                        : part.text;
                       const startMarkerVariant = getMarkerVariantIndex({
                         unitIndex: part.sentenceIndex,
                         unitCount: sentenceCount,
@@ -291,7 +327,15 @@ export function SentenceStructuredRenderer({
                             });
 
                       return (
-                        <span key={`${paragraphIndex}-line-${lineIndex}-part-${partIndex}`}>
+                        <span
+                          key={`${paragraphIndex}-line-${lineIndex}-part-${partIndex}`}
+                          data-rsvp-flow-slice={
+                            sentenceInFlowSlice(part.sentenceIndex)
+                              ? "true"
+                              : undefined
+                          }
+                        >
+                          {leadingSeparator ? <span>{leadingSeparator}</span> : null}
                           {showStartMarker &&
                           effectiveMarkerMode === "sentence" &&
                           part.isSentenceStart &&
@@ -308,7 +352,7 @@ export function SentenceStructuredRenderer({
                               {startMarker.glyph}
                             </span>
                           ) : null}
-                          <span>{part.text}</span>
+                          <span>{visibleText}</span>
                           {showEndMarker &&
                           effectiveMarkerMode === "sentence" &&
                           part.isSentenceEnd &&
@@ -406,7 +450,11 @@ export function SentenceStructuredRenderer({
                       {startMarker.glyph}
                     </span>
                   ) : null}
-                  <span>
+                  <span
+                    data-rsvp-flow-slice={
+                      sentenceInFlowSlice(sentenceIndex) ? "true" : undefined
+                    }
+                  >
                     {sentence}
                     {showEndMarker && endMarker ? (
                       <span
@@ -438,6 +486,7 @@ export function SentenceStructuredRenderer({
                   return {
                     key: `${paragraphIndex}-${sentenceIndex}`,
                     sentence,
+                    inFlowSlice: sentenceInFlowSlice(sentenceIndex),
                     sentenceStyle: {
                       marginLeft: `${sentenceIndent}ch`,
                       maxWidth:

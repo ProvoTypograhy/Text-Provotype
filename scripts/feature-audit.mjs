@@ -556,7 +556,7 @@ try {
   await runCheck("Continuous", "Continuous controls show and RSVP controls hide", async () => {
     await selectOption(page, "Mode", "continuous");
     await page.waitForTimeout(150);
-    expect(await page.getByRole("heading", { name: "Continuous" }).isVisible(), "Continuous section not visible.");
+    expect(await page.getByRole("heading", { name: "Playback" }).isVisible(), "Playback section not visible.");
     expect(await page.getByText("Pause at punctuation").count() === 0, "RSVP punctuation controls still visible.");
     return "Continuous mode control surface switched.";
   });
@@ -648,6 +648,102 @@ try {
     await setCheckbox(page, "Lock Highlight To Flow", false);
     expect(await page.getByText(/Highlight Jump Rate:/).isVisible(), "Jump rate control hidden when flow lock off.");
     return "Continuous highlight controls appeared.";
+  });
+
+  await runCheck("Highlight", "RSVP flow-lock controls", async () => {
+    await selectOption(page, "Mode", "rsvp");
+    await setCheckbox(page, "Enable Highlight", true);
+    expect(await page.getByText("Lock Highlight To Flow").isVisible(), "RSVP flow lock missing.");
+    await setCheckbox(page, "Lock Highlight To Flow", true);
+    expect(await page.getByText(/Highlight Jump Rate:/).count() === 0, "Jump rate remained visible while RSVP flow lock was on.");
+    await setCheckbox(page, "Lock Highlight To Flow", false);
+    expect(await page.getByText(/Highlight Jump Rate:/).isVisible(), "Jump rate hidden while RSVP flow lock was off.");
+    return "RSVP flow lock controls switch between synchronized and fixed-rate timing.";
+  });
+
+  await runCheck("Highlight", "RSVP flow lock follows the advancing slice", async () => {
+    const flowPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(flowPage);
+      await flowPage.locator("textarea").fill(
+        "Alpha beta.\n\nGamma delta.\n\nEpsilon zeta.\n\nEta theta.",
+      );
+      await selectOption(flowPage, "Mode", "rsvp");
+      await setCheckbox(flowPage, "Autoplay", false);
+      await setRange(flowPage, "Viewport Step", 11);
+      await setRange(flowPage, "Advance Step", 1);
+      await setCheckbox(flowPage, "Lexical timing", false);
+      await setCheckbox(flowPage, "Pause at punctuation", false);
+      await setRange(flowPage, "Speed (chars/sec):", 20);
+      await setCheckbox(flowPage, "Enable staircase", true);
+      await selectOption(flowPage, "Staircase Mode", "line");
+      await setCheckbox(flowPage, "Enable Highlight", true);
+      await setRange(flowPage, "Highlight Size:", 3);
+      await setCheckbox(flowPage, "Lock Highlight To Flow", true);
+      await flowPage.getByRole("button", { name: "Reset" }).click();
+      await flowPage.waitForTimeout(150);
+
+      const getTopLevelFlowSliceText = () =>
+        flowPage.evaluate(() =>
+          Array.from(document.querySelectorAll('[data-rsvp-flow-slice="true"]'))
+            .filter(
+              (node) =>
+                !node.parentElement?.closest('[data-rsvp-flow-slice="true"]'),
+            )
+            .map((node) => node.textContent ?? "")
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim(),
+        );
+      const firstSlice = await getTopLevelFlowSliceText();
+      expect(
+        firstSlice === "Alpha beta.",
+        `Initial flow slice was ${firstSlice}.`,
+      );
+
+      await setCheckbox(flowPage, "Autoplay", true);
+      await expectPoll(
+        async () => {
+          return (await getTopLevelFlowSliceText()) === "Gamma delta.";
+        },
+        "Flow slice did not advance from the first to the second paragraph.",
+        1500,
+      );
+      return "Flow-locked RSVP advanced from Alpha to Gamma without traversing retained paragraphs.";
+    } finally {
+      await flowPage.close();
+    }
+  });
+
+  await runCheck("Highlight", "RSVP unlocked highlight uses the fixed rate while paused", async () => {
+    const fixedPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await loadFresh(fixedPage);
+      await fixedPage.locator("textarea").fill("Alpha beta gamma delta.");
+      await selectOption(fixedPage, "Mode", "rsvp");
+      await setCheckbox(fixedPage, "Autoplay", false);
+      await setRange(fixedPage, "Viewport Step", 9);
+      await setCheckbox(fixedPage, "Enable staircase", true);
+      await selectOption(fixedPage, "Staircase Mode", "line");
+      await setCheckbox(fixedPage, "Enable Highlight", true);
+      await setRange(fixedPage, "Highlight Size:", 3);
+      await setCheckbox(fixedPage, "Lock Highlight To Flow", false);
+      await setRange(fixedPage, "Highlight Jump Rate:", 4);
+      await fixedPage.waitForTimeout(100);
+      const initialLeft = await fixedPage
+        .locator('[data-rsvp-highlight-rect="true"]')
+        .first()
+        .evaluate((node) => node.getBoundingClientRect().left);
+      await fixedPage.waitForTimeout(350);
+      const nextLeft = await fixedPage
+        .locator('[data-rsvp-highlight-rect="true"]')
+        .first()
+        .evaluate((node) => node.getBoundingClientRect().left);
+      expect(Math.abs(nextLeft - initialLeft) > 1, "Unlocked highlight did not move at the fixed rate while playback was paused.");
+      return "Unlocked RSVP highlight moved independently while playback was paused.";
+    } finally {
+      await fixedPage.close();
+    }
   });
 
   await runCheck("Highlight", "Continuous vertical highlight with staircase", async () => {
@@ -767,6 +863,46 @@ try {
     const markerCount = await page.locator('span[aria-hidden="true"]').count();
     expect(markerCount > 0, `Marker count was ${markerCount}.`);
     return `Marker count=${markerCount}.`;
+  });
+
+  await runCheck("Structured Layout", "Sentence spaces survive markers and line staircase", async () => {
+    await setCheckbox(page, "Autoplay", false);
+    await page.locator("textarea").fill("One.   Two ordinary words.");
+    await setRange(page, "Viewport Step", 9);
+    await selectOption(page, "Staircase Mode", "line");
+
+    const getReadableStructuredText = () =>
+      page.evaluate(() => {
+        const root = document.querySelector('[data-structured-rsvp-text="true"]');
+        if (!root) return "";
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let value = "";
+        let node = walker.nextNode();
+        while (node) {
+          if (!node.parentElement?.closest('[aria-hidden="true"]')) {
+            value += node.nodeValue ?? "";
+          }
+          node = walker.nextNode();
+        }
+        return value.replace(/\s+/g, " ").trim();
+      });
+
+    await setCheckbox(page, "Enable staircase", false);
+    await setCheckbox(page, "Enable guide markers", true);
+    await page.waitForTimeout(100);
+    expect(
+      (await getReadableStructuredText()) === "One. Two ordinary words.",
+      "Guide-marker layout removed the sentence separator.",
+    );
+
+    await setCheckbox(page, "Enable guide markers", false);
+    await setCheckbox(page, "Enable staircase", true);
+    await page.waitForTimeout(100);
+    expect(
+      (await getReadableStructuredText()) === "One. Two ordinary words.",
+      "Line staircase removed the sentence separator.",
+    );
+    return "Sentence separators survived both structured rendering paths.";
   });
 
   await runCheck("Structured Layout", "Staircase settings export", async () => {

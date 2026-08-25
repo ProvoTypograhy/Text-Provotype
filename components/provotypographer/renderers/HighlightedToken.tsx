@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ConditionSpec } from "@/lib/condition-spec";
 import {
   getHighlightPositionCount,
+  getHighlightRangesForPrefix,
   getHighlightSegments,
   getHighlightSpanStyle,
 } from "@/lib/provotypographer/core";
@@ -89,6 +90,7 @@ export function AnimatedHighlightedToken({
   allowBoundaryCrossing,
   jumpRateHz,
   jumpDurationMs,
+  flowHighlightPrefixLength,
   preserveWhitespace = false,
   centerAnchored = false,
 }: {
@@ -99,16 +101,24 @@ export function AnimatedHighlightedToken({
   allowBoundaryCrossing: boolean;
   jumpRateHz: number;
   jumpDurationMs?: number;
+  flowHighlightPrefixLength?: number;
   preserveWhitespace?: boolean;
   centerAnchored?: boolean;
 }) {
   const [jumpIndex, setJumpIndex] = useState(0);
-  const positionCount = getHighlightPositionCount(
-    token,
-    unit,
-    size,
-    allowBoundaryCrossing,
-  );
+  const positionCount =
+    flowHighlightPrefixLength == null
+      ? getHighlightPositionCount(token, unit, size, allowBoundaryCrossing)
+      : Math.max(
+          1,
+          getHighlightRangesForPrefix({
+            value: token,
+            prefixEnd: flowHighlightPrefixLength,
+            unit,
+            size,
+            allowBoundaryCrossing,
+          }).length,
+        );
 
   useEffect(() => {
     if (positionCount <= 1) {

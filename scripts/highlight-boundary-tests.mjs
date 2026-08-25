@@ -24,13 +24,46 @@ registerHooks({
 });
 
 const {
+  buildParagraphStaircaseLines,
   findHighlightRangeIndexForOffset,
   findTextPosition,
   getHighlightRanges,
+  getHighlightRangesForPrefix,
   getHighlightSegments,
   getHighlightSpanStyle,
+  getRsvpHighlightTiming,
   isEnglishLanguageTag,
+  splitParagraphIntoSentenceParts,
 } = await import("../lib/provotypographer/core.ts");
+
+assert.deepEqual(
+  splitParagraphIntoSentenceParts("One.   Two three."),
+  [
+    { text: "One.", separatorBefore: "" },
+    { text: "Two three.", separatorBefore: " " },
+  ],
+  "sentence splitting should preserve a normalized logical separator",
+);
+
+const staircaseLines = buildParagraphStaircaseLines({
+  paragraph: "Administration. It was her complaint.",
+  startLineIndex: 0,
+  getLineWidthCh: () => 18,
+});
+assert.deepEqual(
+  staircaseLines.map((line) => line.parts.map((part) => part.text).join("")),
+  ["Administration.", "It was her complaint."],
+  "sentence boundaries should wrap as word boundaries without stranding letters",
+);
+assert.equal(
+  buildParagraphStaircaseLines({
+    paragraph: "One.Two",
+    startLineIndex: 0,
+    getLineWidthCh: () => 20,
+  })[0]?.parts.map((part) => part.text).join(""),
+  "One.Two",
+  "staircase layout should not invent separators absent from the source",
+);
 
 assert.equal(isEnglishLanguageTag("en-US"), true);
 assert.equal(isEnglishLanguageTag("en_GB"), true);
@@ -105,6 +138,50 @@ assert.deepEqual(
   ],
   "word ranges should preserve cross-boundary windows when enabled",
 );
+
+const threeParagraphViewport = "Alpha one.\n\nBeta two.\n\nGamma three.";
+const firstParagraphEnd = threeParagraphViewport.indexOf("\n\n");
+assert.deepEqual(
+  getHighlightRangesForPrefix({
+    value: threeParagraphViewport,
+    prefixEnd: firstParagraphEnd,
+    unit: "word",
+    size: 1,
+    allowBoundaryCrossing: false,
+  }),
+  [
+    { start: 0, end: 5 },
+    { start: 6, end: 9 },
+  ],
+  "flow-locked highlighting should limit ranges to the advancing paragraph",
+);
+assert.equal(
+  getHighlightRangesForPrefix({
+    value: "Gamma Alpha Beta",
+    prefixEnd: "Gamma Alpha".length,
+    unit: "word",
+    size: 1,
+    allowBoundaryCrossing: false,
+  }).length,
+  2,
+  "flow range limiting should support wrapped end-of-document windows",
+);
+assert.deepEqual(
+  getHighlightRangesForPrefix({
+    value: "One two. Three four.",
+    prefixEnd: "One two.".length,
+    unit: "word",
+    size: 2,
+    allowBoundaryCrossing: false,
+  }),
+  [{ start: 0, end: 7 }],
+  "flow range limiting should retain sentence-boundary clamping",
+);
+
+assert.deepEqual(getRsvpHighlightTiming(1200, 225), {
+  traversalDurationMs: 1200,
+  totalDurationMs: 1425,
+});
 
 assert.equal(
   findHighlightRangeIndexForOffset(

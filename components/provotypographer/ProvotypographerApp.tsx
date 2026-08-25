@@ -38,6 +38,7 @@ import {
   getHighlightPositionCount,
   getHighlightSegments,
   getRsvpDisplayToken,
+  getRsvpHighlightTiming,
   getRsvpPhaseTiming,
   getStepIndex,
   getTokenizationFromViewportStep,
@@ -389,16 +390,40 @@ export function ProvotypographerApp() {
       spec.tokenization.unit,
     ],
   );
-  const currentRsvpTokenDurationMs = useMemo(() => {
+  const currentRsvpAdvanceText = useMemo(
+    () =>
+      getAdvanceText(
+        rsvpTokens,
+        safeRsvpIndex,
+        effectiveAdvanceStep,
+        spec.tokenization.unit,
+      ),
+    [
+      effectiveAdvanceStep,
+      rsvpTokens,
+      safeRsvpIndex,
+      spec.tokenization.unit,
+    ],
+  );
+  const currentRsvpFlowHighlightText = useMemo(
+    () =>
+      getRsvpDisplayToken(
+        rsvpTokens,
+        safeRsvpIndex,
+        effectiveAdvanceStep,
+        spec.tokenization.unit,
+      ),
+    [
+      effectiveAdvanceStep,
+      rsvpTokens,
+      safeRsvpIndex,
+      spec.tokenization.unit,
+    ],
+  );
+  const currentRsvpTiming = useMemo(() => {
     if (spec.mode !== "rsvp" || !spec.motion.autoplay || !currentRsvpToken) {
       return undefined;
     }
-    const advanceText = getAdvanceText(
-      rsvpTokens,
-      safeRsvpIndex,
-      effectiveAdvanceStep,
-      spec.tokenization.unit,
-    );
     const lexicalTimingRequested =
       spec.motion.rsvpLexicalTiming.enabled && spec.tokenization.unit !== "char";
     if (
@@ -411,7 +436,7 @@ export function ProvotypographerApp() {
     const baseDuration =
       lexicalTimingRequested && lexicalTimingResources
         ? getLexicalAdvanceDurationMs(
-            advanceText,
+            currentRsvpAdvanceText,
             lexicalTimingResources,
             spec.motion.rsvpLexicalTiming,
           )
@@ -424,18 +449,20 @@ export function ProvotypographerApp() {
           );
     const extraDelay =
       spec.motion.pauseAtPunctuation.enabled &&
-      endsWithPausePunctuation(advanceText)
+      endsWithPausePunctuation(currentRsvpAdvanceText)
         ? Math.max(0, spec.motion.pauseAtPunctuation.delayMs)
         : 0;
-    return baseDuration + extraDelay;
+    const timing = getRsvpHighlightTiming(baseDuration, extraDelay);
+    return {
+      baseDurationMs: timing.traversalDurationMs,
+      totalDurationMs: timing.totalDurationMs,
+    };
   }, [
     currentRsvpAdvanceCharCount,
+    currentRsvpAdvanceText,
     currentRsvpToken,
-    effectiveAdvanceStep,
     lexicalTimingLoadFailed,
     lexicalTimingResources,
-    rsvpTokens,
-    safeRsvpIndex,
     spec.mode,
     spec.motion.autoplay,
     spec.motion.pauseAtPunctuation.delayMs,
@@ -444,6 +471,10 @@ export function ProvotypographerApp() {
     spec.motion.speed.value,
     spec.tokenization.unit,
   ]);
+  const currentRsvpTokenDurationMs = currentRsvpTiming?.totalDurationMs;
+  const currentRsvpHighlightDurationMs = rsvpHighlight.tieToFlow
+    ? currentRsvpTiming?.baseDurationMs
+    : undefined;
   const effectiveHighlightJumpRateHz = clamp(
     rsvpHighlight.jumpRateHz,
     HIGHLIGHT_JUMP_RATE_MIN,
@@ -1699,9 +1730,25 @@ export function ProvotypographerApp() {
                         )}
                         rsvpBlank={isRsvpBlank}
                         continuousText={text}
-                        highlightJumpRateHz={effectiveHighlightJumpRateHz}
+                        highlightJumpRateHz={
+                          rsvpHighlight.tieToFlow
+                            ? 0
+                            : effectiveHighlightJumpRateHz
+                        }
                         resetContinuousHighlightKey={resetContinuousHighlightKey}
-                        rsvpHighlightJumpDurationMs={currentRsvpTokenDurationMs}
+                        rsvpHighlightJumpDurationMs={
+                          currentRsvpHighlightDurationMs
+                        }
+                        rsvpFlowHighlightText={
+                          rsvpHighlight.tieToFlow
+                            ? currentRsvpFlowHighlightText
+                            : undefined
+                        }
+                        rsvpFlowSliceTokenCount={
+                          rsvpHighlight.tieToFlow
+                            ? effectiveAdvanceStep
+                            : undefined
+                        }
                         manualAdvanceEnabled={canManualAdvance}
                         onManualAdvance={() => advanceRsvp("manual")}
                         onViewportMouseMove={handleViewportMouseMove}

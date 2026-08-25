@@ -14,6 +14,8 @@ export function Viewport({
   continuousText,
   highlightJumpRateHz,
   rsvpHighlightJumpDurationMs,
+  rsvpFlowHighlightText,
+  rsvpFlowSliceTokenCount,
   resetContinuousHighlightKey,
   manualAdvanceEnabled,
   onManualAdvance,
@@ -28,6 +30,8 @@ export function Viewport({
   continuousText: string;
   highlightJumpRateHz: number;
   rsvpHighlightJumpDurationMs?: number;
+  rsvpFlowHighlightText?: string;
+  rsvpFlowSliceTokenCount?: number;
   resetContinuousHighlightKey: number;
   manualAdvanceEnabled: boolean;
   onManualAdvance: () => void;
@@ -64,6 +68,8 @@ export function Viewport({
                 viewportStep={viewportStep}
                 jumpRateHz={highlightJumpRateHz}
                 jumpDurationMs={rsvpHighlightJumpDurationMs}
+                flowHighlightText={rsvpFlowHighlightText}
+                flowSliceTokenCount={rsvpFlowSliceTokenCount}
               />
             </div>
           ) : null}
@@ -79,6 +85,8 @@ export function Viewport({
                 viewportStep={viewportStep}
                 jumpRateHz={highlightJumpRateHz}
                 jumpDurationMs={rsvpHighlightJumpDurationMs}
+                flowHighlightText={rsvpFlowHighlightText}
+                flowSliceTokenCount={rsvpFlowSliceTokenCount}
               />
             </div>
           ))}

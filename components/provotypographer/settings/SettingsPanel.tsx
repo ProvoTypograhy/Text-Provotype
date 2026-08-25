@@ -584,7 +584,7 @@ export function SettingsPanel({
                         {spec.mode === "continuous" ? (
                           <section className="space-y-3 rounded border border-zinc-200 p-3 text-sm">
                             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-600">
-                              Continuous
+                              Playback
                             </h3>
                             <div className="grid gap-3 sm:grid-cols-2">
                               <label className="flex items-center gap-2 pt-6">
@@ -949,31 +949,31 @@ export function SettingsPanel({
                                 <span>Allow sentence-boundary highlight</span>
                               </label>
                             </div>
-                            {spec.mode === "continuous" ? (
-                              <div className="flex flex-wrap items-center gap-3">
-                                <label className="flex items-center gap-2">
-                                  <input
-                                    type="checkbox"
-                                    disabled={!rsvpHighlight.enabled}
-                                    checked={rsvpHighlight.tieToFlow}
-                                    onChange={(e) =>
-                                      setSpec((prev) => ({
-                                        ...prev,
-                                        typography: {
-                                          ...prev.typography,
-                                          rsvpHighlight: {
-                                            ...(
-                                              prev.typography.rsvpHighlight ??
-                                              conditionSpec.typography.rsvpHighlight
-                                            ),
-                                            tieToFlow: e.target.checked,
-                                          },
+                            <div className="flex flex-wrap items-center gap-3">
+                              <label className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  disabled={!rsvpHighlight.enabled}
+                                  checked={rsvpHighlight.tieToFlow}
+                                  onChange={(e) =>
+                                    setSpec((prev) => ({
+                                      ...prev,
+                                      typography: {
+                                        ...prev.typography,
+                                        rsvpHighlight: {
+                                          ...(
+                                            prev.typography.rsvpHighlight ??
+                                            conditionSpec.typography.rsvpHighlight
+                                          ),
+                                          tieToFlow: e.target.checked,
                                         },
-                                      }))
-                                    }
-                                  />
-                                  <span>Lock Highlight To Flow</span>
-                                </label>
+                                      },
+                                    }))
+                                  }
+                                />
+                                <span>Lock Highlight To Flow</span>
+                              </label>
+                              {spec.mode === "continuous" ? (
                                 <button
                                   type="button"
                                   className="rounded border border-zinc-300 px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
@@ -984,9 +984,9 @@ export function SettingsPanel({
                                 >
                                   Reset Highlight Position
                                 </button>
-                              </div>
-                            ) : null}
-                            {spec.mode !== "continuous" || !rsvpHighlight.tieToFlow ? (
+                              ) : null}
+                            </div>
+                            {!rsvpHighlight.tieToFlow ? (
                               <label className="flex flex-col gap-1">
                                 Highlight Jump Rate: {effectiveHighlightJumpRateHz.toFixed(2)} steps/sec
                                 <input
@@ -1020,10 +1020,11 @@ export function SettingsPanel({
                                 />
                               </label>
                             ) : null}
-                            {spec.mode === "continuous" ? (
+                            {rsvpHighlight.tieToFlow ? (
                               <p className="text-xs text-zinc-500">
-                                With flow lock on, jump highlight speed is derived from the moving text.
-                                Turn it off to run highlight independently and use Reset Highlight to resync.
+                                {spec.mode === "continuous"
+                                  ? "With flow lock on, jump highlight speed is derived from the moving text. Turn it off to run highlight independently and use Reset Highlight to resync."
+                                  : "With flow lock on, the highlight follows the content advancing in this tick. Lexical timing can intentionally vary its rate; turn flow lock off to use a fixed jump rate."}
                               </p>
                             ) : null}
                             <label className="flex flex-col gap-1">

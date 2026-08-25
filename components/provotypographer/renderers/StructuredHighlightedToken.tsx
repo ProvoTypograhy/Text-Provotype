@@ -24,6 +24,7 @@ export function StructuredHighlightedToken({
   allowBoundaryCrossing,
   jumpRateHz,
   jumpDurationMs,
+  limitToRsvpFlowSlice = false,
 }: {
   children: ReactNode;
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
@@ -32,6 +33,7 @@ export function StructuredHighlightedToken({
   allowBoundaryCrossing: boolean;
   jumpRateHz: number;
   jumpDurationMs?: number;
+  limitToRsvpFlowSlice?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const layoutRef = useRef<ContinuousHighlightLayout | null>(null);
@@ -78,12 +80,13 @@ export function StructuredHighlightedToken({
       unit,
       size,
       allowBoundaryCrossing,
+      limitToRsvpFlowSlice,
     });
     layoutRef.current = layout;
     const nextPositionCount = Math.max(1, layout?.ranges.length ?? 1);
     setPositionCount(nextPositionCount);
     applyRange(Math.min(activeIndexRef.current, nextPositionCount - 1));
-  }, [allowBoundaryCrossing, applyRange, size, unit]);
+  }, [allowBoundaryCrossing, applyRange, limitToRsvpFlowSlice, size, unit]);
 
   useLayoutEffect(() => {
     activeIndexRef.current = 0;
@@ -142,6 +145,7 @@ export function StructuredHighlightedToken({
           <span
             key={`${index}-${Math.round(rect.left)}-${Math.round(rect.top)}`}
             className="absolute block"
+            data-rsvp-highlight-rect="true"
             style={{
               ...highlightStyle,
               left: rect.left,

@@ -23,6 +23,7 @@ export type ContinuousHighlightLayout = {
   textLength: number;
   contentLength: number;
 };
+export const RSVP_FLOW_SLICE_ATTRIBUTE = "data-rsvp-flow-slice";
 export type SettingsJson = ConditionSpec & {
   ui?: {
     viewportStep?: ViewportStep;
@@ -133,6 +134,18 @@ export function getRsvpPhaseTiming(
       safeBlankIntervalMs < 0
         ? Math.max(0, safeDisplayDurationMs - nextOnsetMs)
         : 0,
+  };
+}
+
+export function getRsvpHighlightTiming(
+  baseDurationMs: number,
+  punctuationHoldMs: number,
+) {
+  const traversalDurationMs = Math.max(20, baseDurationMs);
+  const holdDurationMs = Math.max(0, punctuationHoldMs);
+  return {
+    traversalDurationMs,
+    totalDurationMs: traversalDurationMs + holdDurationMs,
   };
 }
 
@@ -870,6 +883,28 @@ export function getHighlightRanges(
   return ranges.length ? ranges : [{ start: 0, end: value.length }];
 }
 
+export function getHighlightRangesForPrefix({
+  value,
+  prefixEnd,
+  unit,
+  size,
+  allowBoundaryCrossing = false,
+}: {
+  value: string;
+  prefixEnd: number;
+  unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
+  size: number;
+  allowBoundaryCrossing?: boolean;
+}) {
+  const safePrefixEnd = clamp(Math.floor(prefixEnd), 0, value.length);
+  return getHighlightRanges(
+    value.slice(0, safePrefixEnd),
+    unit,
+    size,
+    allowBoundaryCrossing,
+  );
+}
+
 export function findHighlightRangeIndexForOffset(
   ranges: Array<{ start: number; end: number }>,
   offset: number,
@@ -1108,19 +1143,38 @@ export function buildContinuousHighlightLayout({
   unit,
   size,
   allowBoundaryCrossing,
+  limitToRsvpFlowSlice = false,
 }: {
   container: HTMLElement;
   direction: ConditionSpec["motion"]["direction"];
   unit: ConditionSpec["typography"]["rsvpHighlight"]["unit"];
   size: number;
   allowBoundaryCrossing: boolean;
+  limitToRsvpFlowSlice?: boolean;
 }): ContinuousHighlightLayout | null {
   const { text, entries } = collectReadableTextNodes(container);
   if (!text || !entries.length) {
     return null;
   }
 
-  const ranges = getHighlightRanges(text, unit, size, allowBoundaryCrossing);
+  const flowSliceEnd = limitToRsvpFlowSlice
+    ? entries.reduce((end, entry) => {
+        const flowSlice = entry.node.parentElement?.closest(
+          `[${RSVP_FLOW_SLICE_ATTRIBUTE}="true"]`,
+        );
+        return flowSlice ? Math.max(end, entry.end) : end;
+      }, 0)
+    : text.length;
+  const rangeText = text.slice(
+    0,
+    limitToRsvpFlowSlice ? Math.max(0, flowSliceEnd) : text.length,
+  );
+  const ranges = getHighlightRanges(
+    rangeText,
+    unit,
+    size,
+    allowBoundaryCrossing,
+  );
   if (!ranges.length) {
     return null;
   }
@@ -1275,9 +1329,22 @@ export function splitTokenIntoParagraphs(value: string): string[] {
 }
 
 export function splitParagraphIntoSentences(value: string): string[] {
+  return splitParagraphIntoSentenceParts(value).map((part) => part.text);
+}
+
+export function splitParagraphIntoSentenceParts(value: string): Array<{
+  text: string;
+  separatorBefore: string;
+}> {
   return (value.match(SENTENCE_REGEX) ?? [value])
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
+    .map((sentence) => {
+      const leadingWhitespace = sentence.match(/^\s+/u)?.[0] ?? "";
+      return {
+        text: sentence.trim(),
+        separatorBefore: leadingWhitespace ? " " : "",
+      };
+    })
+    .filter((part) => Boolean(part.text));
 }
 
 export function getSentenceMarkerGlyph(shape: string): string {
@@ -1418,7 +1485,7 @@ export function buildParagraphStaircaseLines({
   startLineIndex: number;
   getLineWidthCh: (lineIndex: number) => number;
 }): StaircaseParagraphLine[] {
-  const sentences = splitParagraphIntoSentences(paragraph);
+  const sentences = splitParagraphIntoSentenceParts(paragraph);
   const lines: StaircaseParagraphLine[] = [];
   let currentLineIndex = startLineIndex;
   let currentLineParts: StaircaseLinePart[] = [];
@@ -1480,6 +1547,10 @@ export function buildParagraphStaircaseLines({
         const breakpoint = Math.max(chunk.lastIndexOf(" "), chunk.lastIndexOf("\t"));
         if (breakpoint > 0) {
           chunk = chunk.slice(0, breakpoint + 1);
+        } else if (breakpoint === 0 && currentLineText) {
+          pushCurrentLine();
+          remaining = remaining.trimStart();
+          continue;
         }
       }
 
@@ -1502,7 +1573,7 @@ export function buildParagraphStaircaseLines({
 
   sentences.forEach((sentence, sentenceIndex) => {
     appendText({
-      rawText: sentence,
+      rawText: `${sentence.separatorBefore}${sentence.text}`,
       sentenceIndex,
       isSentenceStart: true,
       isSentenceEnd: true,
